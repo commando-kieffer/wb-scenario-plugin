@@ -1,0 +1,2410 @@
+#ifdef WORKBENCH
+//! CK - Configuration Scénario
+//! 1. Dépendances CK (et autres GUID) ajoutées au .gproj du projet.
+//! 2. Terrain du scénario, nom et date de l'opération.
+//! 3. Mod renommé CK_Op_<année>_<mois>_<jour> (dossier, TITLE, ID), puis redémarrage de Workbench si besoin
+//!    (dossier renommé et plugin relancé par un .bat, voir RestartWorkbench).
+//! 4. Sous-scène Worlds/<mod>/<mod>.ent créée dans le mod et ouverte.
+//! 5. Briefing et loadouts CK (.conf du mod), Game Mode Setup en Game Master (mission header au nom de l'opération).
+//! 6. Éléments CK, arsenaux et point de spawn US "Base avancée" placés, faction US jouable, monde enregistré.
+//! Aucune classe CK n'est référencée par ce script : il compile sans les mods CK (avant l'ajout des dépendances).
+[WorkbenchPluginAttribute(name: "CK - Configuration Scénario", description: "Dépendances CK, monde, mode de jeu Game Master et éléments CK du scénario", wbModules: { "ResourceManager", "WorldEditor" }, awesomeFontCode: 0xF024)]
+class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
+{
+	static const string TITLE = "CK - Configuration Scénario";
+	static const string GUID_ARMA_REFORGER = "58D0FB3206B6F859";
+	static const string PROFILE_DIR = "$profile:CK_ConfigurationScenario";
+	static const string PLUGIN_FILE = "Scripts/WorkbenchGame/CK_ConfigurationScenario/CK_ConfigurationScenarioPlugin.c";
+	static const string PLUGIN_CLASS = "CK_ConfigurationScenarioPlugin";
+	static const string GAME_MASTER_TEMPLATE = "{6389BA4D41B187DC}Configs/Workbench/GameModeSetup/GameMaster.conf";
+	static const string SPAWN_POINT_NAME = "Base avancée";
+	static const string FACTION_KEY = "US";
+
+	//------------------------------------------------------------------------------------------------
+	override void Run()
+	{
+		RunAll(false);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Workbench started by RestartWorkbench() with -plugin=CK_ConfigurationScenarioPlugin: resume the configuration
+	override void RunCommandline()
+	{
+		RunAll(true);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void RunAll(bool fromCommandLine)
+	{
+		string projectGuid = FindProjectAddon();
+		if (projectGuid.IsEmpty())
+		{
+			if (!fromCommandLine)
+				Workbench.Dialog(TITLE, "Le plugin doit être copié dans le projet du scénario (voir README).");
+
+			return;
+		}
+
+		string gprojPath = FindAddonProjectFile(projectGuid);
+		CK_ConfigurationScenarioProjectFile project = new CK_ConfigurationScenarioProjectFile();
+		if (gprojPath.IsEmpty() || !project.Load(gprojPath))
+		{
+			Workbench.Dialog(TITLE, "Impossible de lire le fichier .gproj du projet.\nSi Workbench a demandé une autorisation de script, accepte-la (redémarre Workbench si tu l'as refusée).");
+			return;
+		}
+
+		CK_ConfigurationScenarioState state = CK_ConfigurationScenarioState.Load(projectGuid);
+		if (!state)
+		{
+			state = new CK_ConfigurationScenarioState();
+			state.m_sProjectGuid = projectGuid;
+		}
+
+		//--- Resume after the restart
+		bool resumeOffered;
+		if (state.m_bPending && IsProjectReady(project))
+		{
+			resumeOffered = true;
+			CK_ConfigurationScenario_ResumeDialog resumeDialog = new CK_ConfigurationScenario_ResumeDialog();
+			string resumeText = string.Format("Reprise de la configuration :\n - opération : %1\n - date : %2\n - mod : %3", state.m_sOperation, state.GetDateText(), state.GetModName());
+			if (!Workbench.ScriptDialog(TITLE, resumeText, resumeDialog))
+				return;
+
+			if (resumeDialog.m_iResult == CK_ConfigurationScenario_ResumeDialog.RESULT_CONTINUE)
+			{
+				RunSetup(project, state);
+				return;
+			}
+		}
+
+		//--- Started from the command line without anything to resume: nothing to do
+		if (fromCommandLine && !resumeOffered)
+			return;
+
+		//--- 1. Dependencies, 2. terrain, 3. operation
+		array<string> wanted = {};
+		if (!RunDependencies(project, wanted))
+			return;
+
+		if (!RunWorldChoice(state))
+			return;
+
+		if (!RunOperation(state))
+			return;
+
+		//--- Project changes: dependencies, TITLE and ID
+		string modName = state.GetModName();
+		project.AddDependencies(wanted);
+		project.SetValue("TITLE", modName);
+		project.SetValue("ID", GetAddonId(modName));
+		if (project.IsModified())
+		{
+			project.Backup(PROFILE_DIR);
+			if (!project.Save())
+			{
+				Workbench.Dialog(TITLE, "Impossible d'écrire le fichier du projet :\n" + gprojPath);
+				return;
+			}
+
+			Print(TITLE + ": projet mis à jour : " + gprojPath, LogLevel.NORMAL);
+		}
+
+		state.m_bPending = true;
+		state.Save();
+
+		//--- Restart when a dependency is not loaded, the ID changed or the folder must be renamed
+		string restartText = GetRestartReasons(project, modName);
+		if (!restartText.IsEmpty())
+		{
+			restartText += "\nEnregistre ton travail avant de redémarrer. Le plugin reprend après le redémarrage (sinon, relance-le).";
+
+			CK_ConfigurationScenario_RestartDialog restartDialog = new CK_ConfigurationScenario_RestartDialog();
+			if (!Workbench.ScriptDialog(TITLE, restartText, restartDialog))
+				return;
+
+			if (!RestartWorkbench(gprojPath, modName))
+				Workbench.Dialog(TITLE, "Redémarrage automatique impossible.\nFerme Workbench, rouvre le projet puis relance le plugin.");
+
+			return;
+		}
+
+		RunSetup(project, state);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	// Project
+	//------------------------------------------------------------------------------------------------
+
+	//------------------------------------------------------------------------------------------------
+	//! Workbench.GetCurrentGameProjectFile() returns the Arma Reforger .gproj, not the opened mod:
+	//! the scenario project is the loaded addon that contains this plugin (last one if several).
+	//! Only path resolution here: files are read in the scenario project only.
+	//! Note: the first file access of a Workbench session triggers Workbench's script authorisation prompt.
+	//! \return GUID of that addon, empty if not found
+	static string FindProjectAddon()
+	{
+		array<string> loaded = {};
+		GameProject.GetLoadedAddons(loaded);
+
+		for (int i = loaded.Count() - 1; i >= 0; i--)
+		{
+			string guid = loaded[i];
+			if (GameProject.IsVanillaAddon(guid))
+				continue;
+
+			string fileSystem = SCR_AddonTool.ToFileSystem(GameProject.GetAddonID(guid));
+			string pluginPath;
+			if (!fileSystem.IsEmpty() && Workbench.GetAbsolutePath(fileSystem + PLUGIN_FILE, pluginPath, true))
+				return guid;
+		}
+
+		return string.Empty;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return absolute path of the scenario project's .gproj, empty if not found
+	static string FindProjectFile()
+	{
+		string guid = FindProjectAddon();
+		if (guid.IsEmpty())
+			return string.Empty;
+
+		return FindAddonProjectFile(guid);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return absolute path of the .gproj at the root of a loaded addon whose GUID matches, empty if not found
+	static string FindAddonProjectFile(string addonGuid)
+	{
+		string fileSystem = SCR_AddonTool.ToFileSystem(GameProject.GetAddonID(addonGuid));
+		if (fileSystem.IsEmpty())
+			return string.Empty;
+
+		string guid = addonGuid;
+		guid.ToUpper();
+
+		array<string> files = { fileSystem + "addon.gproj" };
+		files.InsertAll(SCR_FileIOHelper.FindFiles(fileSystem, ".gproj"));
+		foreach (string file : files)
+		{
+			string absolutePath;
+			if (!Workbench.GetAbsolutePath(file, absolutePath, true))
+				continue;
+
+			absolutePath = CleanPath(absolutePath);
+			CK_ConfigurationScenarioProjectFile project = new CK_ConfigurationScenarioProjectFile();
+			if (project.Load(absolutePath) && project.GetGuid() == guid)
+				return absolutePath;
+		}
+
+		return string.Empty;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! File system of the scenario project, e.g. "$CKOp2026112:" (the ID loaded by Workbench, not the one in the .gproj)
+	static string GetProjectFileSystem(string projectGuid)
+	{
+		return SCR_AddonTool.ToFileSystem(GameProject.GetAddonID(projectGuid));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Addon ID the way Workbench builds it from a name: letters and digits only ("CK_Op_2026_11_2" -> "CKOp2026112")
+	static string GetAddonId(string name)
+	{
+		string allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+		string result;
+		for (int i = 0, length = name.Length(); i < length; i++)
+		{
+			string c = name.Get(i);
+			if (allowed.Contains(c))
+				result += c;
+		}
+
+		return result;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Ready to resume: every dependency loaded and the ID of the .gproj is the one Workbench loaded
+	static bool IsProjectReady(notnull CK_ConfigurationScenarioProjectFile project)
+	{
+		return GetNotLoadedDependencies(project).IsEmpty() && GameProject.GetAddonID(project.GetGuid()) == project.GetValue("ID");
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return " - Name (GUID)" lines of the dependencies of the project that Workbench did not load
+	static string GetNotLoadedDependencies(notnull CK_ConfigurationScenarioProjectFile project)
+	{
+		array<string> loaded = {};
+		GameProject.GetLoadedAddons(loaded);
+		ToUpperAll(loaded);
+
+		array<string> dependencies = {};
+		project.GetDependencies(dependencies);
+
+		string result;
+		foreach (string dependencyGuid : dependencies)
+		{
+			if (loaded.Contains(dependencyGuid))
+				continue;
+
+			result += string.Format(" - %1", GetAddonLabel(dependencyGuid));
+			if (GameProject.GetAddonTitle(dependencyGuid).IsEmpty())
+				result += " : introuvable, à télécharger ou à ajouter au launcher Workbench";
+
+			result += "\n";
+		}
+
+		return result;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return text of the restart dialog, empty when no restart is needed
+	static string GetRestartReasons(notnull CK_ConfigurationScenarioProjectFile project, string modName)
+	{
+		string reasons;
+		string folderName = GetFolderName(project.GetPath());
+		if (folderName != modName)
+			reasons += string.Format(" - dossier du mod renommé : %1 -> %2\n", folderName, modName);
+
+		if (GameProject.GetAddonID(project.GetGuid()) != project.GetValue("ID"))
+			reasons += string.Format(" - nom du mod : %1 (ID %2)\n", modName, project.GetValue("ID"));
+
+		string notLoaded = GetNotLoadedDependencies(project);
+		if (!notLoaded.IsEmpty())
+			reasons += " - dépendances à charger :\n" + notLoaded;
+
+		if (reasons.IsEmpty())
+			return string.Empty;
+
+		return "Workbench doit redémarrer :\n" + reasons;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Folder of a file: "C:/a/CK_Op_2026_11_2/addon.gproj" -> "CK_Op_2026_11_2"
+	static string GetFolderName(string filePath)
+	{
+		string directory = GetDirectory(filePath);
+		if (directory.EndsWith("/"))
+			directory = directory.Substring(0, directory.Length() - 1);
+
+		return FilePath.StripPath(directory);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "C:/a/b/file.ext" -> "C:/a/b/"
+	static string GetDirectory(string filePath)
+	{
+		string path = CleanPath(filePath);
+		return path.Substring(0, path.Length() - FilePath.StripPath(path).Length());
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Forward slashes, no doubled separator (except a leading "//" network path)
+	static string CleanPath(string path)
+	{
+		string result = path;
+		result.Replace("\\", "/");
+		if (result.Length() < 3)
+			return result;
+
+		string head = result.Substring(0, 2);
+		string tail = result.Substring(2, result.Length() - 2);
+		int replaced = tail.Replace("//", "/");
+		while (replaced > 0)
+		{
+			replaced = tail.Replace("//", "/");
+		}
+
+		return head + tail;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static string ToWindowsPath(string path)
+	{
+		string result = path;
+		result.Replace("/", "\\");
+		return result;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static void ToUpperAll(notnull array<string> values)
+	{
+		for (int i = 0, count = values.Count(); i < count; i++)
+		{
+			string value = values[i];
+			value.ToUpper();
+			values[i] = value;
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	// 1. Dépendances
+	//------------------------------------------------------------------------------------------------
+
+	//------------------------------------------------------------------------------------------------
+	static void GetDefaultDependencies(notnull array<string> guids, notnull array<string> names)
+	{
+		guids.Insert("6A9E08A3BF66AFF4");
+		names.Insert("CK Core");
+		guids.Insert("6A8CDBAAAC085EFF");
+		names.Insert("CK Props");
+		guids.Insert("6AA514EDBA6B2C30");
+		names.Insert("CK Structures");
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Dialogs only: the dependencies are written with the other project changes
+	//! \param[out] wanted CK dependencies and extra GUIDs
+	//! \return false when cancelled
+	protected bool RunDependencies(notnull CK_ConfigurationScenarioProjectFile project, notnull array<string> wanted)
+	{
+		string projectGuid = project.GetGuid();
+
+		array<string> defaultGuids = {};
+		array<string> defaultNames = {};
+		GetDefaultDependencies(defaultGuids, defaultNames);
+
+		string text = "Dépendances CK du projet :\n";
+		foreach (int i, string guid : defaultGuids)
+		{
+			if (guid == projectGuid)
+				continue;
+
+			wanted.Insert(guid);
+			text += string.Format(" - %1 (%2)", defaultNames[i], guid);
+			if (project.HasDependency(guid))
+				text += " : déjà présente";
+
+			text += "\n";
+		}
+
+		array<string> current = {};
+		project.GetDependencies(current);
+		string others;
+		foreach (string currentGuid : current)
+		{
+			if (currentGuid != GUID_ARMA_REFORGER && !defaultGuids.Contains(currentGuid))
+				others += string.Format(" - %1\n", GetAddonLabel(currentGuid));
+		}
+
+		if (!others.IsEmpty())
+			text += "\nAutres dépendances du projet :\n" + others;
+
+		text += "\nAjouter d'autres dépendances ?";
+
+		CK_ConfigurationScenario_DependenciesDialog dependenciesDialog = new CK_ConfigurationScenario_DependenciesDialog();
+		if (!Workbench.ScriptDialog(TITLE, text, dependenciesDialog))
+			return false;
+
+		if (dependenciesDialog.m_iResult != CK_ConfigurationScenario_DependenciesDialog.RESULT_ADD)
+			return true;
+
+		CK_ConfigurationScenario_GuidDialog guidDialog = new CK_ConfigurationScenario_GuidDialog();
+		while (true)
+		{
+			if (!Workbench.ScriptDialog(TITLE, "GUID des autres mods : un par ligne, ou séparés par des virgules.", guidDialog))
+				return false;
+
+			array<string> valid = {};
+			array<string> invalid = {};
+			ParseGuidList(guidDialog.m_sGUID, valid, invalid);
+			if (!invalid.IsEmpty())
+			{
+				string invalidText = "GUID non valides (16 caractères 0-9 / A-F) :\n";
+				foreach (string token : invalid)
+				{
+					invalidText += " - " + token + "\n";
+				}
+
+				Workbench.Dialog(TITLE, invalidText);
+				continue;
+			}
+
+			foreach (string validGuid : valid)
+			{
+				if (validGuid != projectGuid && !wanted.Contains(validGuid))
+					wanted.Insert(validGuid);
+			}
+
+			return true;
+		}
+
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "Name (GUID)" when Workbench knows the addon, else the GUID
+	static string GetAddonLabel(string guid)
+	{
+		array<string> defaultGuids = {};
+		array<string> defaultNames = {};
+		GetDefaultDependencies(defaultGuids, defaultNames);
+		int index = defaultGuids.Find(guid);
+		if (index >= 0)
+			return string.Format("%1 (%2)", defaultNames[index], guid);
+
+		string title = GameProject.GetAddonTitle(guid);
+		if (title.IsEmpty())
+			return guid;
+
+		return string.Format("%1 (%2)", title, guid);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Split a user list of GUIDs (commas, semicolons, spaces, line breaks, {braces} and quotes allowed)
+	static void ParseGuidList(string text, notnull array<string> valid, notnull array<string> invalid)
+	{
+		int asciiCR = 13;
+		int asciiLF = 10;
+		int asciiTab = 9;
+
+		string clean = text;
+		clean.Replace(asciiCR.AsciiToString(), " ");
+		clean.Replace(asciiLF.AsciiToString(), " ");
+		clean.Replace(asciiTab.AsciiToString(), " ");
+		clean.Replace(",", " ");
+		clean.Replace(";", " ");
+		clean.Replace("{", " ");
+		clean.Replace("}", " ");
+		clean.Replace("\"", " ");
+
+		array<string> tokens = {};
+		clean.Split(" ", tokens, true);
+		foreach (string token : tokens)
+		{
+			string guid = token.Trim();
+			if (guid.IsEmpty())
+				continue;
+
+			guid.ToUpper();
+			if (!IsGuid(guid))
+			{
+				invalid.Insert(token);
+				continue;
+			}
+
+			if (!valid.Contains(guid))
+				valid.Insert(guid);
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static bool IsGuid(string text)
+	{
+		if (text.Length() != 16)
+			return false;
+
+		string hex = "0123456789ABCDEF";
+		for (int i = 0; i < 16; i++)
+		{
+			if (!hex.Contains(text.Get(i)))
+				return false;
+		}
+
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	// 2. Terrain, 3. opération
+	//------------------------------------------------------------------------------------------------
+
+	//------------------------------------------------------------------------------------------------
+	protected bool RunWorldChoice(notnull CK_ConfigurationScenarioState state)
+	{
+		CK_ConfigurationScenario_WorldDialog worldDialog = new CK_ConfigurationScenario_WorldDialog();
+		string world = state.m_sParentWorld;
+		if (world.IsEmpty())
+			world = GetCurrentWorld();
+
+		if (!GetResourceGuid(world).IsEmpty())
+			worldDialog.m_sMonde = world;
+
+		while (true)
+		{
+			if (!Workbench.ScriptDialog(TITLE, "Terrain du scénario (monde .ent, par ex. Everon ou Arland).\nLe plugin crée la sous-scène du scénario dans le mod.", worldDialog))
+				return false;
+
+			if (!worldDialog.m_sMonde.IsEmpty())
+				break;
+
+			Workbench.Dialog(TITLE, "Aucun monde choisi.");
+		}
+
+		state.m_sParentWorld = worldDialog.m_sMonde;
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected bool RunOperation(notnull CK_ConfigurationScenarioState state)
+	{
+		CK_ConfigurationScenario_OperationDialog operationDialog = new CK_ConfigurationScenario_OperationDialog();
+		operationDialog.m_sNom = state.m_sOperation;
+		if (state.HasDate())
+		{
+			operationDialog.m_iDate = PackDate(state.m_iYear, state.m_iMonth, state.m_iDay);
+		}
+		else
+		{
+			int year, month, day;
+			System.GetYearMonthDay(year, month, day);
+			operationDialog.m_iDate = PackDate(year, month, day);
+		}
+
+		while (true)
+		{
+			if (!Workbench.ScriptDialog(TITLE, "Nom et date de l'opération.", operationDialog))
+				return false;
+
+			string operation = operationDialog.m_sNom.Trim();
+			int pickedYear, pickedMonth, pickedDay;
+			UnpackDate(operationDialog.m_iDate, pickedYear, pickedMonth, pickedDay);
+
+			if (operation.IsEmpty())
+			{
+				Workbench.Dialog(TITLE, "Donne un nom à l'opération.");
+				continue;
+			}
+
+			if (!IsValidDate(pickedYear, pickedMonth, pickedDay))
+			{
+				Workbench.Dialog(TITLE, "Date non valide.");
+				continue;
+			}
+
+			CK_ConfigurationScenarioState preview = new CK_ConfigurationScenarioState();
+			preview.m_iYear = pickedYear;
+			preview.m_iMonth = pickedMonth;
+			preview.m_iDay = pickedDay;
+			string modName = preview.GetModName();
+
+			string confirmText = string.Format("Opération : %1\nDate : %2\n\nMod : %3\nMonde : Worlds/%3/%3.ent", operation, preview.GetDateText(), modName);
+			CK_ConfigurationScenario_ConfirmDialog confirmDialog = new CK_ConfigurationScenario_ConfirmDialog();
+			if (!Workbench.ScriptDialog(TITLE, confirmText, confirmDialog))
+				return false;
+
+			if (confirmDialog.m_iResult == CK_ConfigurationScenario_ConfirmDialog.RESULT_EDIT)
+				continue;
+
+			state.m_sOperation = operation;
+			state.m_iYear = pickedYear;
+			state.m_iMonth = pickedMonth;
+			state.m_iDay = pickedDay;
+			return true;
+		}
+
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! UIWidgets.Date value (DateTimeAsInt): sec 6 bits, min 6, hour 5, day 5, month 4, year - 2000 above (noon here)
+	static int PackDate(int year, int month, int day)
+	{
+		return ((year - 2000) << 26) | (month << 22) | (day << 17) | (12 << 12);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static void UnpackDate(int packed, out int year, out int month, out int day)
+	{
+		year = 2000 + ((packed >> 26) & 63);
+		month = (packed >> 22) & 15;
+		day = (packed >> 17) & 31;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static bool IsValidDate(int year, int month, int day)
+	{
+		if (year < 2000 || month < 1 || month > 12 || day < 1)
+			return false;
+
+		int days = 31;
+		if (month == 4 || month == 6 || month == 9 || month == 11)
+			days = 30;
+
+		if (month == 2)
+		{
+			days = 28;
+			if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)
+				days = 29;
+		}
+
+		return day <= days;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static string GetMonthName(int month)
+	{
+		array<string> names = { "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre" };
+		if (month < 1 || month > 12)
+			return month.ToString();
+
+		return names[month - 1];
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Start a batch file that waits for this Workbench to close, renames the mod folder,
+	//! then opens the project again and starts this plugin (RunCommandline), then exit.
+	//! \return false when the restart could not be prepared (Workbench keeps running)
+	static bool RestartWorkbench(string gprojPath, string newFolderName, string pluginClass = "CK_ConfigurationScenarioPlugin")
+	{
+		string exePath;
+		Workbench.GetExecutableFilePath(exePath);
+		if (exePath.IsEmpty() || gprojPath.IsEmpty())
+			return false;
+
+		string gameDirectory = GetGameDirectory(exePath);
+		string oldDirectory = ToWindowsPath(GetDirectory(gprojPath));
+		if (oldDirectory.EndsWith("\\"))
+			oldDirectory = oldDirectory.Substring(0, oldDirectory.Length() - 1);
+
+		string parentDirectory = oldDirectory.Substring(0, oldDirectory.Length() - FilePath.StripPath(CleanPath(oldDirectory)).Length());
+		string newDirectory = parentDirectory + newFolderName;
+		string gprojName = FilePath.StripPath(CleanPath(gprojPath));
+
+		string arguments = "-gproj \"%GPROJ%\"";
+		string addonsDirectories = GetAddonsDirectories(gameDirectory);
+		if (!addonsDirectories.IsEmpty())
+			arguments += string.Format(" -addonsDir \"%1\"", addonsDirectories);
+
+		string value;
+		if (System.GetCLIParam("profile", value) && !value.IsEmpty())
+			arguments += string.Format(" -profile \"%1\"", value);
+
+		if (!pluginClass.IsEmpty())
+			arguments += " -wbModule=WorldEditor -plugin=" + pluginClass;
+
+		string exeName = FilePath.StripPath(ToWindowsPath(exePath));
+
+		FileIO.MakeDirectory(PROFILE_DIR);
+		string batchPath = PROFILE_DIR + "/restart.bat";
+		FileHandle file = FileIO.OpenFile(batchPath, FileMode.WRITE);
+		if (!file)
+			return false;
+
+		file.WriteLine("@echo off");
+		file.WriteLine("chcp 65001 >nul");
+		file.WriteLine("for /l %%i in (1,1,120) do (");
+		file.WriteLine("  tasklist /fi \"imagename eq " + exeName + "\" 2>nul | find /i \"" + exeName + "\" >nul || goto start");
+		file.WriteLine("  ping -n 2 127.0.0.1 >nul");
+		file.WriteLine(")");
+		file.WriteLine(":start");
+		file.WriteLine("set \"OLD=" + oldDirectory + "\"");
+		file.WriteLine("set \"NEW=" + newDirectory + "\"");
+		file.WriteLine("if /i not \"%OLD%\"==\"%NEW%\" if not exist \"%NEW%\" ren \"%OLD%\" \"" + newFolderName + "\"");
+		file.WriteLine("set \"GPROJ=%OLD%\\" + gprojName + "\"");
+		file.WriteLine("if exist \"%NEW%\\" + gprojName + "\" set \"GPROJ=%NEW%\\" + gprojName + "\"");
+		if (!gameDirectory.IsEmpty())
+			file.WriteLine("cd /d \"" + ToWindowsPath(gameDirectory) + "\"");
+
+		file.WriteLine("start \"\" \"" + ToWindowsPath(exePath) + "\" " + arguments);
+		file.Close();
+
+		string batchAbsPath;
+		if (!Workbench.GetAbsolutePath(batchPath, batchAbsPath, true))
+			return false;
+
+		Print(TITLE + ": redémarrage de Workbench (" + batchAbsPath + ")", LogLevel.NORMAL);
+		Workbench.RunCmd("cmd /c \"\"" + ToWindowsPath(batchAbsPath) + "\"\"", false);
+		Workbench.Exit(0);
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Arma Reforger folder (contains addons/data/ArmaReforger.gproj). Workbench started from its launcher runs in
+	//! "Arma Reforger Tools/Workbench": started with -gproj from there, it does not find the game.
+	static string GetGameDirectory(string exePath)
+	{
+		string cwd;
+		Workbench.GetCwd(cwd);
+		cwd = CleanPath(cwd);
+		if (cwd.EndsWith("/"))
+			cwd = cwd.Substring(0, cwd.Length() - 1);
+
+		array<string> candidates = {};
+
+		//--- From the game project file ("./addons/data/ArmaReforger.gproj" relative to the working directory, or absolute)
+		string gameProject = CleanPath(Workbench.GetCurrentGameProjectFile());
+		if (gameProject.StartsWith("./"))
+			gameProject = cwd + "/" + gameProject.Substring(2, gameProject.Length() - 2);
+
+		int index = gameProject.LastIndexOf("/addons/");
+		if (index > 0)
+			candidates.Insert(gameProject.Substring(0, index));
+
+		candidates.Insert(cwd);
+
+		//--- Steam: ".../common/Arma Reforger Tools/Workbench/exe" -> ".../common/Arma Reforger"
+		string exeDirectory = GetDirectory(exePath);
+		int toolsIndex = exeDirectory.LastIndexOf("Arma Reforger Tools/");
+		if (toolsIndex > 0)
+			candidates.Insert(exeDirectory.Substring(0, toolsIndex) + "Arma Reforger");
+
+		foreach (string candidate : candidates)
+		{
+			if (FileIO.FileExists(candidate + "/addons/data/ArmaReforger.gproj"))
+				return candidate;
+		}
+
+		return string.Empty;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Folders of every loaded addon (and of the game addons), comma separated, for -addonsDir:
+	//! a project opened with -gproj only sees the default folders, the launcher list is not used.
+	static string GetAddonsDirectories(string gameDirectory)
+	{
+		array<string> directories = {};
+		if (!gameDirectory.IsEmpty())
+			directories.Insert(ToWindowsPath(gameDirectory + "/addons"));
+
+		//--- Default Workbench addons folder (Workshop downloads): next to the profile folder
+		string profile;
+		if (Workbench.GetAbsolutePath("$profile:", profile, true))
+		{
+			profile = CleanPath(profile);
+			if (profile.EndsWith("/"))
+				profile = profile.Substring(0, profile.Length() - 1);
+
+			string workbenchAddons = profile.Substring(0, profile.Length() - FilePath.StripPath(profile).Length()) + "addons";
+			if (FileIO.FileExists(workbenchAddons))
+				directories.Insert(ToWindowsPath(workbenchAddons));
+		}
+
+		array<string> loaded = {};
+		GameProject.GetLoadedAddons(loaded);
+		foreach (string guid : loaded)
+		{
+			if (GameProject.IsVanillaAddon(guid))
+				continue;
+
+			string root;
+			if (!Workbench.GetAbsolutePath(SCR_AddonTool.ToFileSystem(GameProject.GetAddonID(guid)), root, true))
+				continue;
+
+			root = CleanPath(root);
+			if (root.EndsWith("/"))
+				root = root.Substring(0, root.Length() - 1);
+
+			string parent = ToWindowsPath(root.Substring(0, root.Length() - FilePath.StripPath(root).Length()));
+			if (parent.EndsWith("\\"))
+				parent = parent.Substring(0, parent.Length() - 1);
+
+			if (!parent.IsEmpty() && !directories.Contains(parent))
+				directories.Insert(parent);
+		}
+
+		string result;
+		foreach (int i, string directory : directories)
+		{
+			if (i > 0)
+				result += ",";
+
+			result += directory;
+		}
+
+		return result;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	// 4-6. Sous-scène, configs, Game Mode Setup, éléments
+	//------------------------------------------------------------------------------------------------
+
+	//------------------------------------------------------------------------------------------------
+	protected void RunSetup(notnull CK_ConfigurationScenarioProjectFile project, notnull CK_ConfigurationScenarioState state)
+	{
+		string modName = state.GetModName();
+		string fileSystem = GetProjectFileSystem(state.m_sProjectGuid);
+		string notes;
+
+		string folderName = GetFolderName(project.GetPath());
+		if (folderName != modName && !folderName.Contains("~"))
+			notes += string.Format("Le dossier du mod n'a pas pu être renommé (%1 existe déjà ou était ouvert ailleurs).\n", modName);
+
+		//--- Sub-scene
+		if (!Workbench.OpenModule(WorldEditor))
+		{
+			Workbench.Dialog(TITLE, "Impossible d'ouvrir le World Editor.");
+			return;
+		}
+
+		string error;
+		ResourceName world = CreateSubScene(fileSystem, modName, state.m_sParentWorld, error);
+		if (world.IsEmpty())
+		{
+			Workbench.Dialog(TITLE, "Impossible de créer le monde du scénario :\n" + error);
+			return;
+		}
+
+		if (!OpenWorld(world))
+		{
+			Workbench.Dialog(TITLE, "Le monde n'a pas pu être ouvert :\n" + world.GetPath() + "\nOuvre-le à la main puis relance le plugin.");
+			return;
+		}
+
+		//--- CK configs of the mod
+		ResourceName briefing = CreateBriefingConfig(fileSystem, modName, state);
+		ResourceName loadouts = CreateLoadoutsConfig(fileSystem, modName);
+
+		//--- Game Mode Setup, forced on Game Master, mission header named after the operation
+		if (!RunGameModeSetup(state.m_sOperation, briefing))
+			return;
+
+		//--- Elements
+		RunPlacement(state, briefing, loadouts, notes);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Open the world in the World Editor (a world registered a moment ago cannot be opened at once: retry)
+	static bool OpenWorld(ResourceName world)
+	{
+		if (IsSameResource(GetCurrentWorld(), world))
+			return true;
+
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		for (int attempt = 0; attempt < 20; attempt++)
+		{
+			if (worldEditor.SetOpenedResource(world) && SCR_WorldEditorToolHelper.IsWorldLoaded())
+				return true;
+
+			Sleep(250);
+		}
+
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Game Mode Setup only scans the scenario sub-scene: on a terrain that already has a map, an AI world or a
+	//! perception manager, it creates a second one ("Multiple map entities present!"). Delete the copies of the sub-scene.
+	//! eturn number of deleted entities
+	static int RemoveDuplicateSingletons(notnull WorldEditorAPI api)
+	{
+		array<typename> singletons = { MapEntity, AIWorld, PerceptionManager };
+		int current = api.GetCurrentSubScene();
+
+		//--- Singleton types already in the parent worlds
+		array<typename> inParents = {};
+		for (int subScene = 0; subScene < current; subScene++)
+		{
+			for (int i = 0, count = api.GetEntityCount(subScene); i < count; i++)
+			{
+				IEntitySource parentSource = api.GetEntity(subScene, i);
+				if (!parentSource)
+					continue;
+
+				typename parentType = parentSource.GetClassName().ToType();
+				if (!parentType)
+					continue;
+
+				foreach (typename singleton : singletons)
+				{
+					if (parentType.IsInherited(singleton) && !inParents.Contains(singleton))
+						inParents.Insert(singleton);
+				}
+			}
+		}
+
+		if (inParents.IsEmpty())
+			return 0;
+
+		array<IEntitySource> toDelete = {};
+		for (int j = 0, currentCount = api.GetEntityCount(current); j < currentCount; j++)
+		{
+			IEntitySource entitySource = api.GetEntity(current, j);
+			if (!entitySource)
+				continue;
+
+			typename type = entitySource.GetClassName().ToType();
+			if (!type)
+				continue;
+
+			foreach (typename parentSingleton : inParents)
+			{
+				if (type.IsInherited(parentSingleton))
+				{
+					toDelete.Insert(entitySource);
+					break;
+				}
+			}
+		}
+
+		foreach (IEntitySource duplicate : toDelete)
+		{
+			Print(TITLE + ": doublon supprimé (déjà dans le terrain) : " + duplicate.GetClassName(), LogLevel.NORMAL);
+			api.DeleteEntity(duplicate);
+		}
+
+		return toDelete.Count();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! <fileSystem>Worlds/<name>/<name>.ent: sub-scene of parentWorld, created and registered if missing
+	//! \return resource name of the world, empty on error
+	static ResourceName CreateSubScene(string fileSystem, string worldName, string parentWorld, out string error)
+	{
+		string worldPath = fileSystem + "Worlds/" + worldName + "/" + worldName + ".ent";
+		string absWorld;
+		if (fileSystem.IsEmpty() || !Workbench.GetAbsolutePath(worldPath, absWorld, false))
+		{
+			error = worldPath;
+			return ResourceName.Empty;
+		}
+
+		absWorld = CleanPath(absWorld);
+		ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
+		if (!FileIO.FileExists(absWorld))
+		{
+			if (GetResourceGuid(parentWorld).IsEmpty())
+			{
+				error = "terrain non valide : " + parentWorld;
+				return ResourceName.Empty;
+			}
+
+			string absLayers = GetDirectory(absWorld) + worldName + "_Layers";
+			FileIO.MakeDirectory(absLayers);
+
+			FileHandle worldFile = FileIO.OpenFile(absWorld, FileMode.WRITE);
+			if (!worldFile)
+			{
+				error = absWorld;
+				return ResourceName.Empty;
+			}
+
+			worldFile.WriteLine("SubScene {");
+			worldFile.WriteLine(" Parent \"" + parentWorld + "\"");
+			worldFile.WriteLine("}");
+			worldFile.Close();
+
+			FileHandle layerFile = FileIO.OpenFile(absLayers + "/default.layer", FileMode.WRITE);
+			if (layerFile)
+				layerFile.Close();
+
+			resourceManager.RegisterResourceFile(absWorld, false);
+			Print(TITLE + ": sous-scène créée : " + absWorld, LogLevel.NORMAL);
+		}
+
+		return GetResourceNameFromFile(absWorld, worldPath);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "{GUID}path" of a registered file (meta file), else Workbench's resource name of the relative path
+	static ResourceName GetResourceNameFromFile(string absolutePath, string relativePath)
+	{
+		ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
+		MetaFile meta = resourceManager.GetMetaFile(absolutePath);
+		if (meta)
+			return meta.GetResourceID();
+
+		return Workbench.GetResourceName(relativePath);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Save a container to <fileSystem><relativePath> and register it
+	//! \return its resource name, empty on error
+	static ResourceName SaveNewConfig(notnull BaseContainer container, string fileSystem, string relativePath)
+	{
+		string path = fileSystem + relativePath;
+		string absolutePath;
+		if (!Workbench.GetAbsolutePath(path, absolutePath, false))
+			return ResourceName.Empty;
+
+		absolutePath = CleanPath(absolutePath);
+		FileIO.MakeDirectory(GetDirectory(absolutePath));
+		if (!BaseContainerTools.SaveContainer(container, ResourceName.Empty, path))
+			return ResourceName.Empty;
+
+		ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
+		resourceManager.RegisterResourceFile(absolutePath, false);
+		return GetResourceNameFromFile(absolutePath, path);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Existing config of the mod (kept as is), empty if missing
+	static ResourceName GetExistingConfig(string fileSystem, string relativePath)
+	{
+		string absolutePath;
+		if (!Workbench.GetAbsolutePath(fileSystem + relativePath, absolutePath, true))
+			return ResourceName.Empty;
+
+		return GetResourceNameFromFile(CleanPath(absolutePath), fileSystem + relativePath);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static string GetBriefingPath(string modName)
+	{
+		return "Configs/CK/" + modName + "_Briefing.conf";
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static string GetLoadoutsPath(string modName)
+	{
+		return "Configs/CK/" + modName + "_Loadouts.conf";
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! CK_BriefingConfig (CK Core) of the operation: title, subtitle with the date, base of the order
+	static ResourceName CreateBriefingConfig(string fileSystem, string modName, notnull CK_ConfigurationScenarioState state)
+	{
+		ResourceName existing = GetExistingConfig(fileSystem, GetBriefingPath(modName));
+		if (!existing.IsEmpty())
+			return existing;
+
+		Resource resource = BaseContainerTools.CreateContainer("CK_BriefingConfig");
+		if (!resource || !resource.IsValid())
+			return ResourceName.Empty;
+
+		BaseContainer container = resource.GetResource().ToBaseContainer();
+		container.Set("m_sTitle", state.m_sOperation);
+		container.Set("m_sSubtitle", "Commando Kieffer 2004 - Ordre d'opération du " + state.GetDateText());
+		container.Set("m_sText", "# Situation\nÀ compléter.\n\n# Mission\nÀ compléter.\n\n# Exécution\nÀ compléter.\n\n# Logistique\nÀ compléter.\n\n# Transmissions\nÀ compléter.");
+		return SaveNewConfig(container, fileSystem, GetBriefingPath(modName));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! CK_MissionLoadoutList (CK Core) of the operation, empty: the scenario maker adds the loadouts
+	static ResourceName CreateLoadoutsConfig(string fileSystem, string modName)
+	{
+		ResourceName existing = GetExistingConfig(fileSystem, GetLoadoutsPath(modName));
+		if (!existing.IsEmpty())
+			return existing;
+
+		Resource resource = BaseContainerTools.CreateContainer("CK_MissionLoadoutList");
+		if (!resource || !resource.IsValid())
+			return ResourceName.Empty;
+
+		return SaveNewConfig(resource.GetResource().ToBaseContainer(), fileSystem, GetLoadoutsPath(modName));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Mission header of the loaded world, created from the Game Master template if missing:
+	//! name = operation, CK Briefing = briefing (when empty). Called by CK_ConfigurationScenario_GameModeSetup.
+	//! \return true when the header exists
+	static bool CreateMissionHeader(ResourceName template, string operation, ResourceName briefing, out string message)
+	{
+		string worldPath = SCR_WorldEditorToolHelper.GetWorldPath();
+		if (worldPath.IsEmpty())
+			return false;
+
+		string fileSystem = SCR_AddonTool.ToFileSystem(FilePath.FileSystemNameFromFileName(worldPath));
+		string worldName = FilePath.StripExtension(FilePath.StripPath(worldPath));
+		string headerPath = fileSystem + "Missions/" + worldName + ".conf";
+		ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
+
+		ResourceName header = FindMissionHeader(fileSystem, GetCurrentWorld());
+		if (!header.IsEmpty())
+		{
+			Resource headerResource = BaseContainerTools.LoadContainer(header);
+			if (!headerResource || !headerResource.IsValid())
+				return false;
+
+			BaseContainer headerContainer = headerResource.GetResource().ToBaseContainer();
+			headerContainer.Set("m_sName", operation);
+			ResourceName currentBriefing;
+			headerContainer.Get("m_sCK_Briefing", currentBriefing);
+			if (currentBriefing.IsEmpty() && !briefing.IsEmpty())
+				headerContainer.Set("m_sCK_Briefing", briefing);
+
+			if (!BaseContainerTools.SaveContainer(headerContainer, header))
+				return false;
+
+			message = string.Format("Mission header : %1\nNom : %2", header.GetPath(), operation);
+			return true;
+		}
+
+		//--- New header from the template (like GameModeSetupConfig.GenerateMissionHeader)
+		Resource templateResource = Resource.Load(template);
+		if (!templateResource || !templateResource.IsValid())
+			return false;
+
+		BaseContainer missionHeader = templateResource.GetResource().ToBaseContainer().GetObject("m_MissionHeader");
+		if (!missionHeader)
+			return false;
+
+		string absWorld;
+		Workbench.GetAbsolutePath(worldPath, absWorld, true);
+		MetaFile worldMeta = resourceManager.GetMetaFile(absWorld);
+		if (!worldMeta)
+			return false;
+
+		missionHeader.Set("World", worldMeta.GetResourceID());
+		missionHeader.Set("m_sName", operation);
+		if (!briefing.IsEmpty())
+			missionHeader.Set("m_sCK_Briefing", briefing);
+
+		string absHeader;
+		Workbench.GetAbsolutePath(headerPath, absHeader, false);
+		absHeader = CleanPath(absHeader);
+		FileIO.MakeDirectory(GetDirectory(absHeader));
+		if (!BaseContainerTools.SaveContainer(missionHeader, ResourceName.Empty, headerPath))
+			return false;
+
+		resourceManager.RegisterResourceFile(absHeader, false);
+		resourceManager.SetOpenedResource(headerPath);
+		message = string.Format("Mission header créé : Missions/%1.conf\nNom : %2", worldName, operation);
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Mission header in <fileSystem>Missions whose World is the given world, empty if none
+	static ResourceName FindMissionHeader(string fileSystem, string world)
+	{
+		array<ResourceName> resources = {};
+		SearchResourcesFilter filter = new SearchResourcesFilter();
+		filter.fileExtensions = { "conf" };
+		filter.rootPath = fileSystem + "Missions";
+		ResourceDatabase.SearchResources(filter, resources.Insert);
+
+		foreach (ResourceName resourceName : resources)
+		{
+			Resource resource = Resource.Load(resourceName);
+			if (!resource || !resource.IsValid())
+				continue;
+
+			BaseContainer container = resource.GetResource().ToBaseContainer();
+			if (!container)
+				continue;
+
+			ResourceName missionWorld;
+			container.Get("World", missionWorld);
+			if (!missionWorld.IsEmpty() && IsSameResource(missionWorld, world))
+				return resourceName;
+		}
+
+		return ResourceName.Empty;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return "{GUID}path" of the loaded world, empty if none
+	static string GetCurrentWorld()
+	{
+		if (!SCR_WorldEditorToolHelper.IsWorldLoaded())
+			return string.Empty;
+
+		string worldPath = SCR_WorldEditorToolHelper.GetWorldPath();
+		if (worldPath.IsEmpty())
+			return string.Empty;
+
+		string resourceName = Workbench.GetResourceName(worldPath);
+		if (resourceName.IsEmpty())
+			return worldPath;
+
+		return resourceName;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Same GUID, or same path when a GUID is missing ("{GUID}" and "$addon:" prefixes ignored)
+	static bool IsSameResource(string a, string b)
+	{
+		if (a.IsEmpty() || b.IsEmpty())
+			return false;
+
+		string guidA = GetResourceGuid(a);
+		string guidB = GetResourceGuid(b);
+		if (!guidA.IsEmpty() && !guidB.IsEmpty())
+			return guidA == guidB;
+
+		return GetResourcePath(a) == GetResourcePath(b);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "{GUID}path" -> "GUID" (upper case), empty when there is no valid GUID
+	static string GetResourceGuid(string resource)
+	{
+		int close = resource.IndexOf("}");
+		if (!resource.StartsWith("{") || close != 17)
+			return string.Empty;
+
+		string guid = resource.Substring(1, 16);
+		guid.ToUpper();
+		if (guid == "0000000000000000")
+			return string.Empty;
+
+		return guid;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "{GUID}$addon:path" -> "path" (lower case)
+	static string GetResourcePath(string resource)
+	{
+		string path = resource;
+		if (path.StartsWith("{"))
+		{
+			int close = path.IndexOf("}");
+			if (close >= 0)
+				path = path.Substring(close + 1, path.Length() - close - 1);
+		}
+
+		if (path.StartsWith("$"))
+		{
+			int colon = path.IndexOf(":");
+			if (colon >= 0)
+				path = path.Substring(colon + 1, path.Length() - colon - 1);
+		}
+
+		path.ToLower();
+		return path;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected bool RunGameModeSetup(string operation, ResourceName briefing)
+	{
+		//--- Plugins cannot be created with new: use the instance Workbench created
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		CK_ConfigurationScenario_GameModeSetup gameModeSetup = CK_ConfigurationScenario_GameModeSetup.Cast(worldEditor.GetPlugin(CK_ConfigurationScenario_GameModeSetup));
+		if (!gameModeSetup)
+		{
+			Workbench.Dialog(TITLE, "Plugin « CK - Game Mode Setup (Game Master) » introuvable.");
+			return false;
+		}
+
+		while (true)
+		{
+			gameModeSetup.SetOperation(operation, briefing);
+			gameModeSetup.Run();
+			gameModeSetup.SetOperation(string.Empty, ResourceName.Empty);
+
+			set<string> prefabGuids = new set<string>();
+			if (ScanSubScene(prefabGuids))
+				return true;
+
+			CK_ConfigurationScenario_GameModeDialog gameModeDialog = new CK_ConfigurationScenario_GameModeDialog();
+			if (!Workbench.ScriptDialog(TITLE, "Pas de mode de jeu dans le monde : Game Mode Setup n'est pas allé au bout.", gameModeDialog))
+				return false;
+
+			if (gameModeDialog.m_iResult == CK_ConfigurationScenario_GameModeDialog.RESULT_CONTINUE)
+				return true;
+		}
+
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Scan the top-level entities of the current sub-scene
+	//! \param[out] prefabGuids GUIDs of every prefab (and parent prefab) used by these entities
+	//! \return true when a game mode entity is present
+	static bool ScanSubScene(notnull set<string> prefabGuids)
+	{
+		return FindGameMode(prefabGuids) != null;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return game mode entity of the current sub-scene, null if none
+	static IEntitySource FindGameMode(set<string> prefabGuids = null)
+	{
+		WorldEditorAPI api = SCR_WorldEditorToolHelper.GetWorldEditorAPI();
+		if (!api)
+			return null;
+
+		IEntitySource gameMode;
+		int subScene = api.GetCurrentSubScene();
+		for (int i = 0, count = api.GetEntityCount(subScene); i < count; i++)
+		{
+			IEntitySource entitySource = api.GetEntity(subScene, i);
+			if (!entitySource)
+				continue;
+
+			typename type = entitySource.GetClassName().ToType();
+			if (!gameMode && type && type.IsInherited(BaseGameMode))
+				gameMode = entitySource;
+
+			if (!prefabGuids)
+				continue;
+
+			BaseContainer ancestor = entitySource.GetAncestor();
+			while (ancestor)
+			{
+				string guid = GetResourceGuid(ancestor.GetResourceName());
+				if (!guid.IsEmpty())
+					prefabGuids.Insert(guid);
+
+				ancestor = ancestor.GetAncestor();
+			}
+		}
+
+		return gameMode;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return first top-level entity of the current sub-scene made from this prefab (or a child prefab), null if none
+	static IEntitySource FindEntityByPrefab(ResourceName prefab)
+	{
+		WorldEditorAPI api = SCR_WorldEditorToolHelper.GetWorldEditorAPI();
+		if (!api)
+			return null;
+
+		string prefabGuid = GetResourceGuid(prefab);
+		int subScene = api.GetCurrentSubScene();
+		for (int i = 0, count = api.GetEntityCount(subScene); i < count; i++)
+		{
+			IEntitySource entitySource = api.GetEntity(subScene, i);
+			if (!entitySource)
+				continue;
+
+			BaseContainer ancestor = entitySource.GetAncestor();
+			while (ancestor)
+			{
+				if (GetResourceGuid(ancestor.GetResourceName()) == prefabGuid)
+					return entitySource;
+
+				ancestor = ancestor.GetAncestor();
+			}
+		}
+
+		return null;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Offsets in metres: right / forward of the point the World Editor camera looks at
+	static void GetItems(notnull array<ref CK_ConfigurationScenarioItem> items)
+	{
+		//--- CK_Core
+		items.Insert(new CK_ConfigurationScenarioItem("Système des troops (CK_Troops)", "{5C1E7A93B2D4F086}Prefabs/CK/CK_Troops.et", "CK_Troops", -2, 0, CK_EConfigurationScenarioItem.TROOPS));
+		items.Insert(new CK_ConfigurationScenarioItem("Infos de mission du menu CK (CK_MissionSettings)", "{2B7E5A93D1C40F68}Prefabs/CK/CK_MissionSettings.et", "CK_MissionSettings", 2, 0, CK_EConfigurationScenarioItem.MISSION_SETTINGS));
+
+		//--- CK_Props / CK_Structures
+		items.Insert(new CK_ConfigurationScenarioItem("Estrade avec insigne CK", "{037D8AF0FEA3F550}Prefabs/Props/Military/Camps/Platform_01_CK.et", string.Empty, 0, 12));
+		items.Insert(new CK_ConfigurationScenarioItem("Dépôt de véhicules - héliport", "{1B9E7DBB225CB67A}Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Helipad.et", string.Empty, 20, 8));
+		items.Insert(new CK_ConfigurationScenarioItem("Dépôt de véhicules - plateforme", "{B52781AA71008D77}Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Platform.et", string.Empty, -15, 8));
+
+		//--- Arma Reforger
+		items.Insert(new CK_ConfigurationScenarioItem("Arsenal armes", "{377EB906F591E4BA}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Weapons_US.et", string.Empty, -3, 5));
+		items.Insert(new CK_ConfigurationScenarioItem("Arsenal munitions", "{5FFD91CF507BFFFB}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Ammunition_US.et", string.Empty, -1, 5));
+		items.Insert(new CK_ConfigurationScenarioItem("Arsenal médical", "{891EF8A5FB7162F1}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Medical_US.et", string.Empty, 1, 5));
+		items.Insert(new CK_ConfigurationScenarioItem("Arsenal équipement", "{0FC1D6E9B592F75D}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Equipment_US.et", string.Empty, 3, 5));
+		items.Insert(new CK_ConfigurationScenarioItem("Point de spawn US « " + SPAWN_POINT_NAME + " »", "{5A2220DD0C16958B}Prefabs/MP/Spawning/SpawnPoint_US.et", "SpawnPoint_BaseAvancee", 0, -4, CK_EConfigurationScenarioItem.SPAWN_POINT));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected void RunPlacement(notnull CK_ConfigurationScenarioState state, ResourceName briefing, ResourceName loadouts, string notes)
+	{
+		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
+		WorldEditorAPI api = SCR_WorldEditorToolHelper.GetWorldEditorAPI();
+		if (!worldEditor || !api || !api.GetWorld())
+		{
+			Workbench.Dialog(TITLE, "Aucun monde chargé dans le World Editor.");
+			return;
+		}
+
+		string listPlaced;
+		string listPresent;
+		string listMissing;
+		string listFailed;
+		PlaceAndConfigure(api, briefing, loadouts, listPlaced, listPresent, listMissing, listFailed);
+
+		bool saved = worldEditor.Save();
+		state.m_bPending = false;
+		state.Save();
+
+		//--- Report: what was placed, and where the scenario maker edits the mission
+		string modName = state.GetModName();
+		string result = string.Format("%1 - %2\n\n", state.m_sOperation, modName);
+		if (!listPlaced.IsEmpty())
+			result += "Placés (sélectionnés, à déplacer ensemble si besoin) :\n" + listPlaced + "\n";
+
+		if (!listPresent.IsEmpty())
+			result += "Déjà dans le monde :\n" + listPresent + "\n";
+
+		if (!listMissing.IsEmpty())
+			result += "Introuvables (mod manquant ou pas à jour) :\n" + listMissing + "\n";
+
+		if (!listFailed.IsEmpty())
+			result += "Échec de création :\n" + listFailed + "\n";
+
+		result += "À modifier dans le mod :\n";
+		result += string.Format(" - monde : Worlds/%1/%1.ent\n", modName);
+		result += string.Format(" - mission header (nom, description, joueurs) : Missions/%1.conf\n", modName);
+		if (!briefing.IsEmpty())
+			result += " - briefing du menu CK : " + briefing.GetPath() + "\n";
+
+		if (!loadouts.IsEmpty())
+			result += " - loadouts du menu CK : " + loadouts.GetPath() + "\n";
+
+		result += " - troops : entité CK_Troops du monde (CK Core n'a pas de .conf pour les troops)\n";
+		result += string.Format(" - point de spawn : entité SpawnPoint_BaseAvancee (faction %1 jouable)\n", FACTION_KEY);
+
+		if (!saved)
+			result += "\nLe monde n'a pas pu être enregistré : enregistre-le (Ctrl+S).\n";
+
+		if (!notes.IsEmpty())
+			result += "\n" + notes;
+
+		CK_ConfigurationScenario_DoneDialog doneDialog = new CK_ConfigurationScenario_DoneDialog();
+		if (!Workbench.ScriptDialog(TITLE, result, doneDialog))
+			return;
+
+		if (doneDialog.m_iResult == CK_ConfigurationScenario_DoneDialog.RESULT_OPEN_BRIEFING && !briefing.IsEmpty())
+		{
+			ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
+			Workbench.OpenModule(ResourceManager);
+			resourceManager.SetOpenedResource(briefing);
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Place the missing elements, configure CK_MissionSettings, the spawn point and the faction (one undo step)
+	static void PlaceAndConfigure(notnull WorldEditorAPI api, ResourceName briefing, ResourceName loadouts, out string listPlaced, out string listPresent, out string listMissing, out string listFailed)
+	{
+		array<ref CK_ConfigurationScenarioItem> items = {};
+		GetItems(items);
+
+		set<string> prefabGuids = new set<string>();
+		ScanSubScene(prefabGuids);
+
+		array<CK_ConfigurationScenarioItem> toPlace = {};
+		foreach (CK_ConfigurationScenarioItem item : items)
+		{
+			if (prefabGuids.Contains(GetResourceGuid(item.m_sPrefab)))
+			{
+				listPresent += " - " + item.m_sLabel + "\n";
+				continue;
+			}
+
+			Resource resource = Resource.Load(item.m_sPrefab);
+			if (!resource || !resource.IsValid())
+			{
+				listMissing += " - " + item.m_sLabel + "\n";
+				continue;
+			}
+
+			toPlace.Insert(item);
+		}
+
+		bool manageEditAction = !api.IsDoingEditAction();
+		if (manageEditAction)
+			api.BeginEntityAction(TITLE);
+
+		RemoveDuplicateSingletons(api);
+
+		array<IEntitySource> created = {};
+		PlaceItems(api, toPlace, listPlaced, listFailed, created);
+
+		//--- Spawn point name (only on the one created now)
+		foreach (int i, IEntitySource entitySource : created)
+		{
+			if (entitySource && toPlace[i].m_eKind == CK_EConfigurationScenarioItem.SPAWN_POINT)
+				api.SetVariableValue(entitySource, { ContainerIdPathEntry("m_Info") }, "Name", SPAWN_POINT_NAME);
+		}
+
+		//--- Briefing and loadouts of CK_MissionSettings, when not set yet
+		IEntitySource missionSettings = FindEntityByPrefab("{2B7E5A93D1C40F68}Prefabs/CK/CK_MissionSettings.et");
+		if (missionSettings)
+		{
+			SetComponentResourceIfEmpty(api, missionSettings, "CK_MissionBriefingComponent", "m_sBriefingConfig", briefing);
+			SetComponentResourceIfEmpty(api, missionSettings, "CK_MissionLoadoutsComponent", "m_sLoadoutList", loadouts);
+		}
+
+		//--- Players can spawn without the Game Master making the faction playable
+		SetFactionPlayable(api, FACTION_KEY);
+
+		if (manageEditAction)
+			api.EndEntityAction(TITLE);
+
+		api.UpdateSelectionGui();
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static void SetComponentResourceIfEmpty(notnull WorldEditorAPI api, notnull IEntitySource entitySource, string componentClass, string variable, ResourceName value)
+	{
+		if (value.IsEmpty())
+			return;
+
+		IEntityComponentSource component = SCR_BaseContainerTools.FindComponentSource(entitySource, componentClass);
+		if (!component)
+			return;
+
+		ResourceName current;
+		component.Get(variable, current);
+		if (!current.IsEmpty())
+			return;
+
+		api.SetVariableValue(entitySource, { ContainerIdPathEntry(componentClass) }, variable, value);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! The Game Master faction manager (child of GameMode_Editor_Full) has every faction non-playable:
+	//! make this one playable so that players deploy on the spawn point at mission start
+	//! \return true when the faction is playable
+	static bool SetFactionPlayable(notnull WorldEditorAPI api, string factionKey)
+	{
+		IEntitySource gameMode = FindGameMode();
+		if (!gameMode)
+			return false;
+
+		for (int i = 0, count = gameMode.GetNumChildren(); i < count; i++)
+		{
+			IEntitySource child = gameMode.GetChild(i);
+			typename type = child.GetClassName().ToType();
+			if (!type || !type.IsInherited(SCR_FactionManager))
+				continue;
+
+			BaseContainerList factions = child.GetObjectArray("Factions");
+			if (!factions)
+				continue;
+
+			for (int j = 0, factionCount = factions.Count(); j < factionCount; j++)
+			{
+				BaseContainer faction = factions.Get(j);
+				string key;
+				faction.Get("FactionKey", key);
+				if (key != factionKey)
+					continue;
+
+				bool playable;
+				faction.Get("m_bIsPlayable", playable);
+				if (playable)
+					return true;
+
+				return api.SetVariableValue(child, { ContainerIdPathEntry("Factions", j) }, "m_bIsPlayable", "1");
+			}
+		}
+
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Create the entities in front of the World Editor camera, select them and show them
+	//! \param[out] created entity of each item of toPlace (null on failure)
+	static void PlaceItems(notnull WorldEditorAPI api, notnull array<CK_ConfigurationScenarioItem> toPlace, out string listPlaced, out string listFailed, array<IEntitySource> created = null)
+	{
+		BaseWorld world = api.GetWorld();
+		if (!world)
+			return;
+
+		//--- Reference point: where the camera looks, entities face the camera
+		vector origin, forward;
+		GetCameraTarget(api, origin, forward);
+		vector right = Vector(forward[2], 0, -forward[0]);
+
+		float yaw = Math.Atan2(-forward[0], -forward[2]) * Math.RAD2DEG;
+		string angles = string.Format("0 %1 0", yaw);
+
+		bool manageEditAction = !api.IsDoingEditAction();
+		if (manageEditAction)
+			api.BeginEntityAction(TITLE);
+
+		api.ClearEntitySelection();
+		int layerId = api.GetCurrentEntityLayerId();
+
+		foreach (CK_ConfigurationScenarioItem placeItem : toPlace)
+		{
+			vector position = origin + right * placeItem.m_fRight + forward * placeItem.m_fForward;
+			position[1] = world.GetSurfaceY(position[0], position[2]);
+
+			string entityName = placeItem.m_sName;
+			if (!entityName.IsEmpty() && api.FindEntityByName(entityName))
+				entityName = string.Empty;
+
+			IEntitySource entitySource = api.CreateEntity(placeItem.m_sPrefab, entityName, layerId, null, position, vector.Zero);
+			if (created)
+				created.Insert(entitySource);
+
+			if (!entitySource)
+			{
+				listFailed += " - " + placeItem.m_sLabel + "\n";
+				continue;
+			}
+
+			api.SetVariableValue(entitySource, null, "angles", angles);
+			api.AddToEntitySelection(entitySource);
+			listPlaced += " - " + placeItem.m_sLabel + "\n";
+		}
+
+		if (manageEditAction)
+			api.EndEntityAction(TITLE);
+
+		api.UpdateSelectionGui();
+
+		//--- Show everything that was placed
+		vector cameraPosition = origin - forward * 30 + vector.Up * 22;
+		vector cameraDirection = origin + forward * 8 - cameraPosition;
+		cameraDirection.Normalize();
+		api.SetCamera(cameraPosition, cameraDirection);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \param[out] origin terrain point at the centre of the World Editor view (or 30 m in front of the camera)
+	//! \param[out] forward horizontal camera direction (normalised)
+	static void GetCameraTarget(notnull WorldEditorAPI api, out vector origin, out vector forward)
+	{
+		BaseWorld world = api.GetWorld();
+		vector traceStart, traceEnd, traceDir;
+		bool hit = api.TraceWorldPos(api.GetScreenWidth() / 2, api.GetScreenHeight() / 2, TraceFlags.WORLD, traceStart, traceEnd, traceDir);
+
+		forward = traceDir;
+		forward[1] = 0;
+		if (forward.Length() < 0.01)
+			forward = vector.Forward;
+		else
+			forward.Normalize();
+
+		if (hit)
+			origin = traceEnd;
+		else
+			origin = traceStart + forward * 30;
+
+		origin[1] = world.GetSurfaceY(origin[0], origin[2]);
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+//! Vanilla Game Mode Setup without the template page: always Game Master. Started by CK - Configuration Scénario,
+//! the mission header is created (or updated) with the operation name and the CK briefing instead of the template's
+//! placeholders. Registered as a plugin because Workbench plugins cannot be created with new.
+[WorkbenchPluginAttribute(name: "CK - Game Mode Setup (Game Master)", description: "Game Mode Setup vanilla, toujours en Game Master", wbModules: { "WorldEditor" }, awesomeFontCode: 0xF6E8)]
+class CK_ConfigurationScenario_GameModeSetup : SCR_GameModeSetupPlugin
+{
+	protected string m_sCKOperation;
+	protected ResourceName m_sCKBriefing;
+
+	//------------------------------------------------------------------------------------------------
+	void SetOperation(string operation, ResourceName briefing)
+	{
+		m_sCKOperation = operation;
+		m_sCKBriefing = briefing;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	override void Run()
+	{
+		m_sTemplate = CK_ConfigurationScenarioPlugin.GAME_MASTER_TEMPLATE;
+
+		string error;
+		if (!LoadConfig(error))
+		{
+			Workbench.Dialog(CK_ConfigurationScenarioPlugin.TITLE, error);
+			return;
+		}
+
+		ShowPage(SCR_EGameModeSetupPage.VALIDATION);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	override protected void RunMissionHeader()
+	{
+		//--- Started on its own: vanilla header step
+		if (m_sCKOperation.IsEmpty())
+		{
+			super.RunMissionHeader();
+			return;
+		}
+
+		m_sDialogMessageMissionHeader = string.Empty;
+		m_bIsMissionHeaderValid = CK_ConfigurationScenarioPlugin.CreateMissionHeader(m_sTemplate, m_sCKOperation, m_sCKBriefing, m_sDialogMessageMissionHeader);
+		if (!m_bIsMissionHeaderValid)
+			m_sDialogMessageMissionHeader = "Le mission header n'a pas pu être créé.";
+
+		//--- No page of its own (as in vanilla when the header exists): go straight to the results
+		m_aPageHistory.Resize(m_aPageHistory.Count() - 1);
+		ShowPage(SCR_EGameModeSetupPage.MISSION_HEADER_RESULTS);
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+//! Configuration in progress, kept across the restart: $profile:CK_ConfigurationScenario/<project GUID>.txt
+class CK_ConfigurationScenarioState
+{
+	string m_sProjectGuid;
+	string m_sParentWorld;
+	string m_sOperation;
+	int m_iYear;
+	int m_iMonth;
+	int m_iDay;
+	bool m_bPending;
+
+	//------------------------------------------------------------------------------------------------
+	static string GetPath(string projectGuid)
+	{
+		return CK_ConfigurationScenarioPlugin.PROFILE_DIR + "/" + projectGuid + ".txt";
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static CK_ConfigurationScenarioState Load(string projectGuid)
+	{
+		FileHandle file = FileIO.OpenFile(GetPath(projectGuid), FileMode.READ);
+		if (!file)
+			return null;
+
+		CK_ConfigurationScenarioState state = new CK_ConfigurationScenarioState();
+		state.m_sProjectGuid = projectGuid;
+
+		string line;
+		while (file.ReadLine(line) >= 0)
+		{
+			int separator = line.IndexOf("=");
+			if (separator < 1)
+				continue;
+
+			string key = line.Substring(0, separator);
+			string value = line.Substring(separator + 1, line.Length() - separator - 1);
+			switch (key)
+			{
+				case "world": state.m_sParentWorld = value; break;
+				case "operation": state.m_sOperation = value; break;
+				case "year": state.m_iYear = value.ToInt(); break;
+				case "month": state.m_iMonth = value.ToInt(); break;
+				case "day": state.m_iDay = value.ToInt(); break;
+				case "pending": state.m_bPending = value == "1"; break;
+			}
+		}
+
+		file.Close();
+		return state;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	bool Save()
+	{
+		FileIO.MakeDirectory(CK_ConfigurationScenarioPlugin.PROFILE_DIR);
+		FileHandle file = FileIO.OpenFile(GetPath(m_sProjectGuid), FileMode.WRITE);
+		if (!file)
+			return false;
+
+		file.WriteLine("world=" + m_sParentWorld);
+		file.WriteLine("operation=" + m_sOperation);
+		file.WriteLine("year=" + m_iYear.ToString());
+		file.WriteLine("month=" + m_iMonth.ToString());
+		file.WriteLine("day=" + m_iDay.ToString());
+		if (m_bPending)
+			file.WriteLine("pending=1");
+		else
+			file.WriteLine("pending=0");
+
+		file.Close();
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	bool HasDate()
+	{
+		return CK_ConfigurationScenarioPlugin.IsValidDate(m_iYear, m_iMonth, m_iDay);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! CK_Op_<year>_<month>_<day>, integers without leading zeros
+	string GetModName()
+	{
+		return string.Format("CK_Op_%1_%2_%3", m_iYear, m_iMonth, m_iDay);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "2 novembre 2026"
+	string GetDateText()
+	{
+		return string.Format("%1 %2 %3", m_iDay, CK_ConfigurationScenarioPlugin.GetMonthName(m_iMonth), m_iYear);
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+enum CK_EConfigurationScenarioItem
+{
+	OTHER,
+	TROOPS,
+	MISSION_SETTINGS,
+	SPAWN_POINT,
+}
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenarioItem
+{
+	string m_sLabel;
+	ResourceName m_sPrefab;
+	string m_sName;
+	float m_fRight;
+	float m_fForward;
+	CK_EConfigurationScenarioItem m_eKind;
+
+	//------------------------------------------------------------------------------------------------
+	void CK_ConfigurationScenarioItem(string label, ResourceName prefab, string entityName, float right, float forward, CK_EConfigurationScenarioItem kind = CK_EConfigurationScenarioItem.OTHER)
+	{
+		m_sLabel = label;
+		m_sPrefab = prefab;
+		m_sName = entityName;
+		m_fRight = right;
+		m_fForward = forward;
+		m_eKind = kind;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+//! Text edition of a .gproj: the root "Dependencies { }" block and the root ID / TITLE lines are rewritten,
+//! every other line is kept as is
+class CK_ConfigurationScenarioProjectFile
+{
+	protected string m_sPath;
+	protected string m_sGuid;
+	protected ref array<string> m_aLines = {};
+	protected ref array<string> m_aDependencies = {};
+	protected ref map<string, int> m_mValueLines = new map<string, int>();
+	protected int m_iDependenciesStart = -1;
+	protected int m_iDependenciesEnd = -1;
+	protected int m_iInsertAt = 1;
+	protected bool m_bModified;
+
+	//------------------------------------------------------------------------------------------------
+	bool Load(string path)
+	{
+		m_sPath = path;
+		m_sGuid = string.Empty;
+		m_aLines.Clear();
+		m_aDependencies.Clear();
+		m_mValueLines.Clear();
+		m_iDependenciesStart = -1;
+		m_iDependenciesEnd = -1;
+		m_iInsertAt = 1;
+		m_bModified = false;
+
+		FileHandle file = FileIO.OpenFile(path, FileMode.READ);
+		if (!file)
+			return false;
+
+		string line;
+		while (file.ReadLine(line) >= 0)
+		{
+			//--- Drop a trailing carriage return (CRLF files)
+			int length = line.Length();
+			if (length > 0 && line.ToAscii(length - 1) == 13)
+				line = line.Substring(0, length - 1);
+
+			m_aLines.Insert(line);
+		}
+
+		file.Close();
+
+		if (m_aLines.IsEmpty())
+			return false;
+
+		array<string> valueKeys = { "ID", "GUID", "TITLE" };
+		int depth;
+		bool dependenciesOpened;
+		for (int i = 0, count = m_aLines.Count(); i < count; i++)
+		{
+			string text = m_aLines[i].Trim();
+			if (depth == 1)
+			{
+				if (m_iDependenciesStart < 0 && StartsWithWord(text, "Dependencies"))
+					m_iDependenciesStart = i;
+
+				foreach (string key : valueKeys)
+				{
+					if (!StartsWithWord(text, key))
+						continue;
+
+					if (!m_mValueLines.Contains(key))
+						m_mValueLines.Insert(key, i);
+
+					m_iInsertAt = i + 1;
+				}
+			}
+
+			depth += CountBraces(text);
+
+			if (m_iDependenciesStart >= 0 && m_iDependenciesEnd < 0)
+			{
+				if (text.Contains("{"))
+					dependenciesOpened = true;
+
+				array<string> quoted = {};
+				GetAllQuoted(text, quoted);
+				foreach (string quotedGuid : quoted)
+				{
+					quotedGuid.ToUpper();
+					if (!m_aDependencies.Contains(quotedGuid))
+						m_aDependencies.Insert(quotedGuid);
+				}
+
+				if (dependenciesOpened && depth <= 1)
+					m_iDependenciesEnd = i;
+			}
+		}
+
+		//--- Unclosed block: do not touch the file
+		if (m_iDependenciesStart >= 0 && m_iDependenciesEnd < 0)
+			return false;
+
+		m_sGuid = GetValue("GUID");
+		m_sGuid.ToUpper();
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	string GetPath()
+	{
+		return m_sPath;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	string GetGuid()
+	{
+		return m_sGuid;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	bool IsModified()
+	{
+		return m_bModified;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Value of a root line (ID, GUID, TITLE), empty if missing
+	string GetValue(string key)
+	{
+		int index;
+		if (!m_mValueLines.Find(key, index))
+			return string.Empty;
+
+		return GetFirstQuoted(m_aLines[index].Trim());
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Set a root line (ID or TITLE), added after the header lines if missing
+	void SetValue(string key, string value)
+	{
+		if (GetValue(key) == value)
+			return;
+
+		int index;
+		if (m_mValueLines.Find(key, index))
+		{
+			m_aLines[index] = GetIndent(m_aLines[index]) + key + " \"" + value + "\"";
+		}
+		else
+		{
+			index = m_iInsertAt;
+			m_aLines.InsertAt(" " + key + " \"" + value + "\"", index);
+			foreach (string otherKey, int otherIndex : m_mValueLines)
+			{
+				if (otherIndex >= index)
+					m_mValueLines.Set(otherKey, otherIndex + 1);
+			}
+
+			if (m_iDependenciesStart >= index)
+			{
+				m_iDependenciesStart++;
+				m_iDependenciesEnd++;
+			}
+
+			m_mValueLines.Insert(key, index);
+			m_iInsertAt = index + 1;
+		}
+
+		m_bModified = true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	void GetDependencies(notnull array<string> guids)
+	{
+		guids.Copy(m_aDependencies);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	bool HasDependency(string guid)
+	{
+		return m_aDependencies.Contains(guid);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return number of dependencies added
+	int AddDependencies(notnull array<string> guids)
+	{
+		int added;
+		foreach (string guid : guids)
+		{
+			if (guid == m_sGuid || m_aDependencies.Contains(guid))
+				continue;
+
+			m_aDependencies.Insert(guid);
+			added++;
+		}
+
+		if (added > 0)
+			m_bModified = true;
+
+		return added;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Copy of the file as it was loaded: <directory>/<GUID>_addon.gproj.bak
+	bool Backup(string directory)
+	{
+		FileIO.MakeDirectory(directory);
+		string name = m_sGuid;
+		if (name.IsEmpty())
+			name = "project";
+
+		FileHandle file = FileIO.OpenFile(directory + "/" + name + "_addon.gproj.bak", FileMode.WRITE);
+		if (!file)
+			return false;
+
+		foreach (string line : m_aLines)
+		{
+			file.WriteLine(line);
+		}
+
+		file.Close();
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	bool Save()
+	{
+		array<string> lines = {};
+		BuildLines(lines);
+
+		FileHandle file = FileIO.OpenFile(m_sPath, FileMode.WRITE);
+		if (!file)
+			return false;
+
+		foreach (string line : lines)
+		{
+			file.WriteLine(line);
+		}
+
+		file.Close();
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	void BuildLines(notnull array<string> lines)
+	{
+		string indent = " ";
+		int from = m_iInsertAt;
+		int to = m_iInsertAt - 1;
+		if (m_iDependenciesStart >= 0)
+		{
+			indent = GetIndent(m_aLines[m_iDependenciesStart]);
+			from = m_iDependenciesStart;
+			to = m_iDependenciesEnd;
+		}
+
+		for (int i = 0; i < from; i++)
+		{
+			lines.Insert(m_aLines[i]);
+		}
+
+		lines.Insert(indent + "Dependencies {");
+		foreach (string guid : m_aDependencies)
+		{
+			lines.Insert(indent + " \"" + guid + "\"");
+		}
+
+		lines.Insert(indent + "}");
+
+		for (int j = to + 1, count = m_aLines.Count(); j < count; j++)
+		{
+			lines.Insert(m_aLines[j]);
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected static bool StartsWithWord(string text, string word)
+	{
+		if (!text.StartsWith(word))
+			return false;
+
+		int length = word.Length();
+		if (text.Length() == length)
+			return true;
+
+		string next = text.Get(length);
+		return next == " " || next == "{" || next == "\"" || text.ToAscii(length) == 9;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "{" minus "}" outside of quotes
+	protected static int CountBraces(string text)
+	{
+		int result;
+		bool inQuotes;
+		for (int i = 0, length = text.Length(); i < length; i++)
+		{
+			string c = text.Get(i);
+			if (c == "\"")
+				inQuotes = !inQuotes;
+			else if (!inQuotes && c == "{")
+				result++;
+			else if (!inQuotes && c == "}")
+				result--;
+		}
+
+		return result;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected static string GetFirstQuoted(string text)
+	{
+		array<string> quoted = {};
+		GetAllQuoted(text, quoted);
+		if (quoted.IsEmpty())
+			return string.Empty;
+
+		return quoted[0];
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected static void GetAllQuoted(string text, notnull array<string> quoted)
+	{
+		int start = text.IndexOf("\"");
+		while (start >= 0)
+		{
+			int end = text.IndexOfFrom(start + 1, "\"");
+			if (end < 0)
+				return;
+
+			quoted.Insert(text.Substring(start + 1, end - start - 1));
+			start = text.IndexOfFrom(end + 1, "\"");
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	protected static string GetIndent(string line)
+	{
+		int i;
+		int length = line.Length();
+		while (i < length && (line.Get(i) == " " || line.ToAscii(i) == 9))
+		{
+			i++;
+		}
+
+		return line.Substring(0, i);
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+// Dialogs
+//------------------------------------------------------------------------------------------------
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenario_DependenciesDialog
+{
+	static const int RESULT_ADD = 1;
+	static const int RESULT_CONTINUE = 2;
+
+	int m_iResult;
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Annuler")]
+	protected bool ButtonCancel()
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Oui")]
+	protected bool ButtonAdd()
+	{
+		m_iResult = RESULT_ADD;
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Non, continuer", true)]
+	protected bool ButtonContinue()
+	{
+		m_iResult = RESULT_CONTINUE;
+		return true;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenario_GuidDialog
+{
+	[Attribute(defvalue: "", uiwidget: UIWidgets.EditBoxMultiline, desc: "GUID des mods (16 caractères), un par ligne ou séparés par des virgules")]
+	string m_sGUID;
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Annuler")]
+	protected bool ButtonCancel()
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Ajouter", true)]
+	protected bool ButtonOK()
+	{
+		return true;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenario_WorldDialog
+{
+	[Attribute(defvalue: "", uiwidget: UIWidgets.ResourceNamePicker, desc: "Terrain du scénario (monde parent de la sous-scène)", params: "ent")]
+	ResourceName m_sMonde;
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Annuler")]
+	protected bool ButtonCancel()
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Continuer", true)]
+	protected bool ButtonOK()
+	{
+		return true;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenario_OperationDialog
+{
+	[Attribute(defvalue: "", uiwidget: UIWidgets.EditBox, desc: "Nom de l'opération : nom du scénario (mission header) et titre du briefing CK")]
+	string m_sNom;
+
+	[Attribute(defvalue: "0", uiwidget: UIWidgets.Date, desc: "Date de l'opération : nom du mod et du monde (CK_Op_année_mois_jour)")]
+	int m_iDate;
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Annuler")]
+	protected bool ButtonCancel()
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Continuer", true)]
+	protected bool ButtonOK()
+	{
+		return true;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenario_ConfirmDialog
+{
+	static const int RESULT_EDIT = 1;
+	static const int RESULT_OK = 2;
+
+	int m_iResult;
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Annuler")]
+	protected bool ButtonCancel()
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Modifier")]
+	protected bool ButtonEdit()
+	{
+		m_iResult = RESULT_EDIT;
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Valider", true)]
+	protected bool ButtonOK()
+	{
+		m_iResult = RESULT_OK;
+		return true;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenario_ResumeDialog
+{
+	static const int RESULT_RESTART = 1;
+	static const int RESULT_CONTINUE = 2;
+
+	int m_iResult;
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Annuler")]
+	protected bool ButtonCancel()
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Recommencer")]
+	protected bool ButtonRestart()
+	{
+		m_iResult = RESULT_RESTART;
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Continuer", true)]
+	protected bool ButtonContinue()
+	{
+		m_iResult = RESULT_CONTINUE;
+		return true;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenario_RestartDialog
+{
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Plus tard")]
+	protected bool ButtonLater()
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Redémarrer Workbench", true)]
+	protected bool ButtonRestart()
+	{
+		return true;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenario_GameModeDialog
+{
+	static const int RESULT_RETRY = 1;
+	static const int RESULT_CONTINUE = 2;
+
+	int m_iResult;
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Annuler")]
+	protected bool ButtonCancel()
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Continuer sans")]
+	protected bool ButtonContinue()
+	{
+		m_iResult = RESULT_CONTINUE;
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Relancer Game Mode Setup", true)]
+	protected bool ButtonRetry()
+	{
+		m_iResult = RESULT_RETRY;
+		return true;
+	}
+}
+
+//------------------------------------------------------------------------------------------------
+class CK_ConfigurationScenario_DoneDialog
+{
+	static const int RESULT_CLOSE = 1;
+	static const int RESULT_OPEN_BRIEFING = 2;
+
+	int m_iResult;
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Fermer")]
+	protected bool ButtonClose()
+	{
+		m_iResult = RESULT_CLOSE;
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	[ButtonAttribute("Ouvrir le briefing", true)]
+	protected bool ButtonOpenBriefing()
+	{
+		m_iResult = RESULT_OPEN_BRIEFING;
+		return true;
+	}
+}
+#endif // WORKBENCH
