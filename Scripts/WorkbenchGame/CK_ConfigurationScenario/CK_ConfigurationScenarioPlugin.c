@@ -2,11 +2,12 @@
 //! CK - Configuration Scénario
 //! 1. Dépendances CK (et autres GUID) ajoutées au .gproj du projet.
 //! 2. Terrain du scénario, nom et date de l'opération.
-//! 3. Mod renommé CK_Op_<année>_<mois>_<jour> (dossier, TITLE, ID), puis redémarrage de Workbench si besoin
+//! 3. Mod renommé CK_Op_<année>_<mois>_<jour> (mois et jour sur 2 chiffres : dossier, TITLE, ID), puis redémarrage de Workbench si besoin
 //!    (dossier renommé et plugin relancé par un .bat, voir RestartWorkbench).
 //! 4. Sous-scène Worlds/<mod>/<mod>.ent créée dans le mod et ouverte.
 //! 5. Briefing et loadouts CK (.conf du mod), Game Mode Setup en Game Master (mission header au nom de l'opération).
-//! 6. Éléments CK, arsenaux et point de spawn US "Base avancée" placés, faction US jouable, monde enregistré.
+//! 6. Calques Composants_Mission (systèmes), Base_Avancee (FOB) et Jour_1 à Jour_4, éléments CK, arsenaux et point de spawn
+//!    US "Base avancée" placés, faction US jouable, monde enregistré.
 //! Aucune classe CK n'est référencée par ce script : il compile sans les mods CK (avant l'ajout des dépendances).
 [WorkbenchPluginAttribute(name: "CK - Configuration Scénario", description: "Dépendances CK, monde, mode de jeu Game Master et éléments CK du scénario", wbModules: { "ResourceManager", "WorldEditor" }, awesomeFontCode: 0xF024)]
 class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
@@ -19,6 +20,10 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	static const string GAME_MASTER_TEMPLATE = "{6389BA4D41B187DC}Configs/Workbench/GameModeSetup/GameMaster.conf";
 	static const string SPAWN_POINT_NAME = "Base avancée";
 	static const string FACTION_KEY = "US";
+	static const string LAYER_SYSTEMS = "Composants_Mission";
+	static const string LAYER_BASE = "Base_Avancee";
+	static const string LAYER_DAY = "Jour_";
+	static const int DAY_COUNT = 4;
 
 	//------------------------------------------------------------------------------------------------
 	override void Run()
@@ -49,7 +54,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		CK_ConfigurationScenarioProjectFile project = new CK_ConfigurationScenarioProjectFile();
 		if (gprojPath.IsEmpty() || !project.Load(gprojPath))
 		{
-			Workbench.Dialog(TITLE, "Impossible de lire le fichier .gproj du projet.\nSi Workbench a demandé une autorisation de script, accepte-la (redémarre Workbench si tu l'as refusée).");
+			Workbench.Dialog(TITLE, "Impossible de lire le fichier .gproj du projet.\nSi Workbench a demandé une autorisation de script, acceptez-la (redémarrez Workbench si vous l'avez refusée).");
 			return;
 		}
 
@@ -116,14 +121,14 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		string restartText = GetRestartReasons(project, modName);
 		if (!restartText.IsEmpty())
 		{
-			restartText += "\nEnregistre ton travail avant de redémarrer. Le plugin reprend après le redémarrage (sinon, relance-le).";
+			restartText += "\nEnregistrez votre travail avant de redémarrer. Le plugin reprend après le redémarrage (sinon, relancez-le).";
 
 			CK_ConfigurationScenario_RestartDialog restartDialog = new CK_ConfigurationScenario_RestartDialog();
 			if (!Workbench.ScriptDialog(TITLE, restartText, restartDialog))
 				return;
 
 			if (!RestartWorkbench(gprojPath, modName))
-				Workbench.Dialog(TITLE, "Redémarrage automatique impossible.\nFerme Workbench, rouvre le projet puis relance le plugin.");
+				Workbench.Dialog(TITLE, "Redémarrage automatique impossible.\nFermez Workbench, rouvrez le projet puis relancez le plugin.");
 
 			return;
 		}
@@ -201,14 +206,14 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! File system of the scenario project, e.g. "$CKOp2026112:" (the ID loaded by Workbench, not the one in the .gproj)
+	//! File system of the scenario project, e.g. "$CKOp20261202:" (the ID loaded by Workbench, not the one in the .gproj)
 	static string GetProjectFileSystem(string projectGuid)
 	{
 		return SCR_AddonTool.ToFileSystem(GameProject.GetAddonID(projectGuid));
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! Addon ID the way Workbench builds it from a name: letters and digits only ("CK_Op_2026_11_2" -> "CKOp2026112")
+	//! Addon ID the way Workbench builds it from a name: letters and digits only ("CK_Op_2026_12_02" -> "CKOp20261202")
 	static string GetAddonId(string name)
 	{
 		string allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -280,7 +285,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! Folder of a file: "C:/a/CK_Op_2026_11_2/addon.gproj" -> "CK_Op_2026_11_2"
+	//! Folder of a file: "C:/a/CK_Op_2026_12_02/addon.gproj" -> "CK_Op_2026_12_02"
 	static string GetFolderName(string filePath)
 	{
 		string directory = GetDirectory(filePath);
@@ -561,7 +566,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 
 			if (operation.IsEmpty())
 			{
-				Workbench.Dialog(TITLE, "Donne un nom à l'opération.");
+				Workbench.Dialog(TITLE, "Donnez un nom à l'opération.");
 				continue;
 			}
 
@@ -834,10 +839,23 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			return;
 		}
 
+		if (!IsSameResource(GetCurrentWorld(), world))
+			RemoveEmptyDefaultLayer(fileSystem, modName);
+
 		if (!OpenWorld(world))
 		{
-			Workbench.Dialog(TITLE, "Le monde n'a pas pu être ouvert :\n" + world.GetPath() + "\nOuvre-le à la main puis relance le plugin.");
+			Workbench.Dialog(TITLE, "Le monde n'a pas pu être ouvert :\n" + world.GetPath() + "\nOuvrez-le à la main puis relancez le plugin.");
 			return;
+		}
+
+		//--- Layers of the operation; Game Mode Setup creates its entities in the active layer: Composants_Mission
+		WorldEditorAPI api = SCR_WorldEditorToolHelper.GetWorldEditorAPI();
+		if (api)
+		{
+			CreateLayers(api);
+			string systemsLayer = FindLayer(api, LAYER_SYSTEMS);
+			if (!systemsLayer.IsEmpty())
+				api.SetActiveSubsceneLayer(api.GetCurrentSubScene(), systemsLayer);
 		}
 
 		//--- CK configs of the mod
@@ -874,7 +892,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	//------------------------------------------------------------------------------------------------
 	//! Game Mode Setup only scans the scenario sub-scene: on a terrain that already has a map, an AI world or a
 	//! perception manager, it creates a second one ("Multiple map entities present!"). Delete the copies of the sub-scene.
-	//! eturn number of deleted entities
+	//! \return number of deleted entities
 	static int RemoveDuplicateSingletons(notnull WorldEditorAPI api)
 	{
 		array<typename> singletons = { MapEntity, AIWorld, PerceptionManager };
@@ -936,6 +954,154 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
+	//! \return path of the layer of the current sub-scene with this name (also inside a folder), empty if missing
+	static string FindLayer(notnull WorldEditorAPI api, string name)
+	{
+		array<string> layers = {};
+		api.GetSubsceneFolders(api.GetCurrentSubScene(), layers);
+		foreach (string layer : layers)
+		{
+			if (layer == name || layer.EndsWith("/" + name))
+				return layer;
+		}
+
+		return string.Empty;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return path of the layer, created if missing (GetSubsceneLayerId returns the default layer for a missing name)
+	static string EnsureLayer(notnull WorldEditorAPI api, string name)
+	{
+		string layer = FindLayer(api, name);
+		if (!layer.IsEmpty())
+			return layer;
+
+		return api.CreateSubsceneLayer(api.GetCurrentSubScene(), name);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Composants_Mission (game mode, managers, CK systems), Base_Avancee (FOB), Jour_1 to Jour_4 (one per Friday)
+	static void GetLayerNames(notnull array<string> names)
+	{
+		names.Insert(LAYER_SYSTEMS);
+		names.Insert(LAYER_BASE);
+		for (int day = 1; day <= DAY_COUNT; day++)
+		{
+			names.Insert(LAYER_DAY + day.ToString());
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static void CreateLayers(notnull WorldEditorAPI api)
+	{
+		array<string> names = {};
+		GetLayerNames(names);
+		foreach (string name : names)
+		{
+			EnsureLayer(api, name);
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! The World Editor has no script API to delete a layer: the empty "default" layer of a world created by an older
+	//! version of the plugin is removed by deleting its file, while the world is closed
+	//! \return true when the file was deleted
+	static bool RemoveEmptyDefaultLayer(string fileSystem, string worldName)
+	{
+		string worldPath = fileSystem + "Worlds/" + worldName + "/" + worldName + ".ent";
+		string absWorld;
+		if (fileSystem.IsEmpty() || !Workbench.GetAbsolutePath(worldPath, absWorld, true))
+			return false;
+
+		string absLayers = GetDirectory(CleanPath(absWorld)) + worldName + "_Layers/";
+		string defaultLayer = absLayers + "default.layer";
+		if (!FileIO.FileExists(defaultLayer) || !FileIO.FileExists(absLayers + LAYER_SYSTEMS + ".layer"))
+			return false;
+
+		//--- Entities in it: kept
+		FileHandle file = FileIO.OpenFile(defaultLayer, FileMode.READ);
+		if (!file)
+			return false;
+
+		int length = file.GetLength();
+		file.Close();
+		if (length > 0)
+			return false;
+
+		if (!FileIO.DeleteFile(defaultLayer))
+			Workbench.RunCmd("cmd /c del /q \"" + ToWindowsPath(defaultLayer) + "\"", true);
+
+		return !FileIO.FileExists(defaultLayer);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Move the scenario entities still in the default layer: game mode and managers to Composants_Mission,
+	//! elements of the plugin to their layer. Entities in another layer are left where the scenario maker put them.
+	//! \return number of moved entities
+	static int OrganizeLayers(notnull WorldEditorAPI api)
+	{
+		int subScene = api.GetCurrentSubScene();
+		array<ref CK_ConfigurationScenarioItem> items = {};
+		GetItems(items);
+
+		array<typename> systemTypes = { BaseGameMode, PerceptionManager, AIWorld, MapEntity };
+		array<IEntitySource> toMove = {};
+		array<string> targets = {};
+		for (int i = 0, count = api.GetEntityCount(subScene); i < count; i++)
+		{
+			IEntitySource entitySource = api.GetEntity(subScene, i);
+			if (!entitySource || entitySource.GetParent() || api.GetEntitySubsceneLayer(subScene, entitySource) != "default")
+				continue;
+
+			string target;
+			typename type = entitySource.GetClassName().ToType();
+			if (type)
+			{
+				foreach (typename systemType : systemTypes)
+				{
+					if (type.IsInherited(systemType))
+					{
+						target = LAYER_SYSTEMS;
+						break;
+					}
+				}
+			}
+
+			if (target.IsEmpty())
+			{
+				BaseContainer ancestor = entitySource.GetAncestor();
+				while (ancestor && target.IsEmpty())
+				{
+					string guid = GetResourceGuid(ancestor.GetResourceName());
+					foreach (CK_ConfigurationScenarioItem item : items)
+					{
+						if (GetResourceGuid(item.m_sPrefab) == guid)
+						{
+							target = item.m_sLayer;
+							break;
+						}
+					}
+
+					ancestor = ancestor.GetAncestor();
+				}
+			}
+
+			if (target.IsEmpty())
+				continue;
+
+			toMove.Insert(entitySource);
+			targets.Insert(target);
+		}
+
+		foreach (int j, IEntitySource movedSource : toMove)
+		{
+			api.SetEntitySubsceneLayer(subScene, movedSource, EnsureLayer(api, targets[j]));
+		}
+
+		return toMove.Count();
+	}
+
+	//------------------------------------------------------------------------------------------------
 	//! <fileSystem>Worlds/<name>/<name>.ent: sub-scene of parentWorld, created and registered if missing
 	//! \return resource name of the world, empty on error
 	static ResourceName CreateSubScene(string fileSystem, string worldName, string parentWorld, out string error)
@@ -973,9 +1139,15 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			worldFile.WriteLine("}");
 			worldFile.Close();
 
-			FileHandle layerFile = FileIO.OpenFile(absLayers + "/default.layer", FileMode.WRITE);
-			if (layerFile)
-				layerFile.Close();
+			//--- The layers of the operation, without Workbench's "default" layer
+			array<string> layerNames = {};
+			GetLayerNames(layerNames);
+			foreach (string layerName : layerNames)
+			{
+				FileHandle layerFile = FileIO.OpenFile(absLayers + "/" + layerName + ".layer", FileMode.WRITE);
+				if (layerFile)
+					layerFile.Close();
+			}
 
 			resourceManager.RegisterResourceFile(absWorld, false);
 			Print(TITLE + ": sous-scène créée : " + absWorld, LogLevel.NORMAL);
@@ -1356,20 +1528,20 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	static void GetItems(notnull array<ref CK_ConfigurationScenarioItem> items)
 	{
 		//--- CK_Core
-		items.Insert(new CK_ConfigurationScenarioItem("Système des troops (CK_Troops)", "{5C1E7A93B2D4F086}Prefabs/CK/CK_Troops.et", "CK_Troops", -2, 0, CK_EConfigurationScenarioItem.TROOPS));
-		items.Insert(new CK_ConfigurationScenarioItem("Infos de mission du menu CK (CK_MissionSettings)", "{2B7E5A93D1C40F68}Prefabs/CK/CK_MissionSettings.et", "CK_MissionSettings", 2, 0, CK_EConfigurationScenarioItem.MISSION_SETTINGS));
+		items.Insert(new CK_ConfigurationScenarioItem("Système des troops (CK_Troops)", "{5C1E7A93B2D4F086}Prefabs/CK/CK_Troops.et", "CK_Troops", -2, 0, LAYER_SYSTEMS, CK_EConfigurationScenarioItem.TROOPS));
+		items.Insert(new CK_ConfigurationScenarioItem("Infos de mission du menu CK (CK_MissionSettings)", "{2B7E5A93D1C40F68}Prefabs/CK/CK_MissionSettings.et", "CK_MissionSettings", 2, 0, LAYER_SYSTEMS, CK_EConfigurationScenarioItem.MISSION_SETTINGS));
 
 		//--- CK_Props / CK_Structures
-		items.Insert(new CK_ConfigurationScenarioItem("Estrade avec insigne CK", "{037D8AF0FEA3F550}Prefabs/Props/Military/Camps/Platform_01_CK.et", string.Empty, 0, 12));
-		items.Insert(new CK_ConfigurationScenarioItem("Dépôt de véhicules - héliport", "{1B9E7DBB225CB67A}Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Helipad.et", string.Empty, 20, 8));
-		items.Insert(new CK_ConfigurationScenarioItem("Dépôt de véhicules - plateforme", "{B52781AA71008D77}Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Platform.et", string.Empty, -15, 8));
+		items.Insert(new CK_ConfigurationScenarioItem("Estrade avec insigne CK", "{037D8AF0FEA3F550}Prefabs/Props/Military/Camps/Platform_01_CK.et", string.Empty, 0, 12, LAYER_BASE));
+		items.Insert(new CK_ConfigurationScenarioItem("Dépôt de véhicules - héliport", "{1B9E7DBB225CB67A}Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Helipad.et", string.Empty, 20, 8, LAYER_BASE));
+		items.Insert(new CK_ConfigurationScenarioItem("Dépôt de véhicules - plateforme", "{B52781AA71008D77}Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Platform.et", string.Empty, -15, 8, LAYER_BASE));
 
 		//--- Arma Reforger
-		items.Insert(new CK_ConfigurationScenarioItem("Arsenal armes", "{377EB906F591E4BA}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Weapons_US.et", string.Empty, -3, 5));
-		items.Insert(new CK_ConfigurationScenarioItem("Arsenal munitions", "{5FFD91CF507BFFFB}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Ammunition_US.et", string.Empty, -1, 5));
-		items.Insert(new CK_ConfigurationScenarioItem("Arsenal médical", "{891EF8A5FB7162F1}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Medical_US.et", string.Empty, 1, 5));
-		items.Insert(new CK_ConfigurationScenarioItem("Arsenal équipement", "{0FC1D6E9B592F75D}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Equipment_US.et", string.Empty, 3, 5));
-		items.Insert(new CK_ConfigurationScenarioItem("Point de spawn US « " + SPAWN_POINT_NAME + " »", "{5A2220DD0C16958B}Prefabs/MP/Spawning/SpawnPoint_US.et", "SpawnPoint_BaseAvancee", 0, -4, CK_EConfigurationScenarioItem.SPAWN_POINT));
+		items.Insert(new CK_ConfigurationScenarioItem("Arsenal armes", "{377EB906F591E4BA}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Weapons_US.et", string.Empty, -3, 5, LAYER_BASE));
+		items.Insert(new CK_ConfigurationScenarioItem("Arsenal munitions", "{5FFD91CF507BFFFB}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Ammunition_US.et", string.Empty, -1, 5, LAYER_BASE));
+		items.Insert(new CK_ConfigurationScenarioItem("Arsenal médical", "{891EF8A5FB7162F1}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Medical_US.et", string.Empty, 1, 5, LAYER_BASE));
+		items.Insert(new CK_ConfigurationScenarioItem("Arsenal équipement", "{0FC1D6E9B592F75D}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Equipment_US.et", string.Empty, 3, 5, LAYER_BASE));
+		items.Insert(new CK_ConfigurationScenarioItem("Point de spawn US « " + SPAWN_POINT_NAME + " »", "{5A2220DD0C16958B}Prefabs/MP/Spawning/SpawnPoint_US.et", "SpawnPoint_BaseAvancee", 0, -4, LAYER_BASE, CK_EConfigurationScenarioItem.SPAWN_POINT));
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -1408,6 +1580,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		if (!listFailed.IsEmpty())
 			result += "Échec de création :\n" + listFailed + "\n";
 
+		result += string.Format("Calques : %1 (systèmes), %2 (FOB : arsenaux, dépôts, spawn), %3 à %4 (un par vendredi). Calque actif : %3.\n\n", LAYER_SYSTEMS, LAYER_BASE, LAYER_DAY + "1", LAYER_DAY + DAY_COUNT.ToString());
 		result += "À modifier dans le mod :\n";
 		result += string.Format(" - monde : Worlds/%1/%1.ent\n", modName);
 		result += string.Format(" - mission header (nom, description, joueurs) : Missions/%1.conf\n", modName);
@@ -1421,7 +1594,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		result += string.Format(" - point de spawn : entité SpawnPoint_BaseAvancee (faction %1 jouable)\n", FACTION_KEY);
 
 		if (!saved)
-			result += "\nLe monde n'a pas pu être enregistré : enregistre-le (Ctrl+S).\n";
+			result += "\nLe monde n'a pas pu être enregistré : enregistrez-le (Ctrl+S).\n";
 
 		if (!notes.IsEmpty())
 			result += "\n" + notes;
@@ -1472,6 +1645,8 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			api.BeginEntityAction(TITLE);
 
 		RemoveDuplicateSingletons(api);
+		CreateLayers(api);
+		OrganizeLayers(api);
 
 		array<IEntitySource> created = {};
 		PlaceItems(api, toPlace, listPlaced, listFailed, created);
@@ -1498,6 +1673,11 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			api.EndEntityAction(TITLE);
 
 		api.UpdateSelectionGui();
+
+		//--- What the scenario maker places next belongs to a day
+		string firstDay = FindLayer(api, LAYER_DAY + "1");
+		if (!firstDay.IsEmpty())
+			api.SetActiveSubsceneLayer(api.GetCurrentSubScene(), firstDay);
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -1581,10 +1761,14 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			api.BeginEntityAction(TITLE);
 
 		api.ClearEntitySelection();
-		int layerId = api.GetCurrentEntityLayerId();
+		int subScene = api.GetCurrentSubScene();
 
 		foreach (CK_ConfigurationScenarioItem placeItem : toPlace)
 		{
+			int layerId = api.GetCurrentEntityLayerId();
+			if (!placeItem.m_sLayer.IsEmpty())
+				layerId = api.GetSubsceneLayerId(subScene, EnsureLayer(api, placeItem.m_sLayer));
+
 			vector position = origin + right * placeItem.m_fRight + forward * placeItem.m_fForward;
 			position[1] = world.GetSurfaceY(position[0], position[2]);
 
@@ -1778,10 +1962,19 @@ class CK_ConfigurationScenarioState
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! CK_Op_<year>_<month>_<day>, integers without leading zeros
+	//! CK_Op_<year>_<month>_<day>, month and day on 2 digits: CK_Op_2026_12_02
 	string GetModName()
 	{
-		return string.Format("CK_Op_%1_%2_%3", m_iYear, m_iMonth, m_iDay);
+		return string.Format("CK_Op_%1_%2_%3", m_iYear, TwoDigits(m_iMonth), TwoDigits(m_iDay));
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static string TwoDigits(int value)
+	{
+		if (value >= 0 && value < 10)
+			return "0" + value.ToString();
+
+		return value.ToString();
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -1809,16 +2002,18 @@ class CK_ConfigurationScenarioItem
 	string m_sName;
 	float m_fRight;
 	float m_fForward;
+	string m_sLayer;
 	CK_EConfigurationScenarioItem m_eKind;
 
 	//------------------------------------------------------------------------------------------------
-	void CK_ConfigurationScenarioItem(string label, ResourceName prefab, string entityName, float right, float forward, CK_EConfigurationScenarioItem kind = CK_EConfigurationScenarioItem.OTHER)
+	void CK_ConfigurationScenarioItem(string label, ResourceName prefab, string entityName, float right, float forward, string layer, CK_EConfigurationScenarioItem kind = CK_EConfigurationScenarioItem.OTHER)
 	{
 		m_sLabel = label;
 		m_sPrefab = prefab;
 		m_sName = entityName;
 		m_fRight = right;
 		m_fForward = forward;
+		m_sLayer = layer;
 		m_eKind = kind;
 	}
 }
