@@ -1,13 +1,14 @@
 #ifdef WORKBENCH
 //! CK - Configuration Scénario
 //! 1. Dépendances CK (et autres GUID) ajoutées au .gproj du projet.
-//! 2. Terrain du scénario, nom et date de l'opération.
+//! 2. Terrain du scénario, nom, date, lieu et scénaristes de l'opération.
 //! 3. Mod renommé CK_Op_<année>_<mois>_<jour> (mois et jour sur 2 chiffres : dossier, TITLE, ID), puis redémarrage de Workbench si besoin
 //!    (dossier renommé et plugin relancé par un .bat, voir RestartWorkbench).
 //! 4. Sous-scène Worlds/<mod>/<mod>.ent créée dans le mod et ouverte.
-//! 5. Briefing et loadouts CK (.conf du mod), Game Mode Setup en Game Master (mission header au nom de l'opération).
+//! 5. Briefing, loadouts CK (avec la tenue de briefing), Game Mode Setup en Game Master (mission header : nom de l'opération,
+//!    scénaristes, description et images CK).
 //! 6. Calques Composants_Mission (systèmes), Base_Avancee (FOB) et Jour_1 à Jour_4, éléments CK, arsenaux et point de spawn
-//!    US "Base avancée" placés, faction US jouable, monde enregistré.
+//!    US "Base avancée" placés, intro au nom et au lieu de l'opération, faction US jouable, monde enregistré.
 //! Aucune classe CK n'est référencée par ce script : il compile sans les mods CK (avant l'ajout des dépendances).
 [WorkbenchPluginAttribute(name: "CK - Configuration Scénario", description: "Dépendances CK, monde, mode de jeu Game Master et éléments CK du scénario", wbModules: { "ResourceManager", "WorldEditor" }, awesomeFontCode: 0xF024)]
 class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
@@ -24,6 +25,15 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	static const string LAYER_BASE = "Base_Avancee";
 	static const string LAYER_DAY = "Jour_";
 	static const int DAY_COUNT = 4;
+	static const string BRIEFING_OUTFIT_NAME = "Tenue de briefing";
+	static const string MISSION_INTRO_PREFAB = "{1C31E7D9936A78A5}Prefabs/CK/CK_MissionIntro.et";
+
+	//--- Mission header: description and pictures. Icon: CK Core logo (= thumbnail.png of the CK mods). Loading screen
+	//--- and preview: textures shipped with the plugin (UI/Textures/CK_Scenario, copied into the scenario with Scripts).
+	static const string HEADER_DESCRIPTION = "Un scénario du commando Kieffer";
+	static const string HEADER_ICON = "{61C4A8F2E59B3D07}UI/Textures/CK/CK_Logo.edds";
+	static const string HEADER_LOADING_SCREEN = "{1C741E00470F1914}UI/Textures/CK_Scenario/CK_MissionLoadingScreen.edds";
+	static const string HEADER_PREVIEW_IMAGE = "{DBCF99A13ED844E8}UI/Textures/CK_Scenario/CK_MissionPreview.edds";
 
 	//------------------------------------------------------------------------------------------------
 	override void Run()
@@ -71,7 +81,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		{
 			resumeOffered = true;
 			CK_ConfigurationScenario_ResumeDialog resumeDialog = new CK_ConfigurationScenario_ResumeDialog();
-			string resumeText = string.Format("Reprise de la configuration :\n - opération : %1\n - date : %2\n - mod : %3", state.m_sOperation, state.GetDateText(), state.GetModName());
+			string resumeText = string.Format("Reprise de la configuration :\n - opération : %1\n - date : %2\n - lieu : %3\n - scénaristes : %4\n - mod : %5", state.m_sOperation, state.GetDateText(), state.GetLocation(), state.GetAuthors(), state.GetModName());
 			if (!Workbench.ScriptDialog(TITLE, resumeText, resumeDialog))
 				return;
 
@@ -126,6 +136,11 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			CK_ConfigurationScenario_RestartDialog restartDialog = new CK_ConfigurationScenario_RestartDialog();
 			if (!Workbench.ScriptDialog(TITLE, restartText, restartDialog))
 				return;
+
+			//--- Launcher project list: the renamed project (the old folder would be mounted at startup and fail)
+			state.m_sListedPath = GetRenamedProjectPath(project, modName);
+			state.Save();
+			UpdateProjectLists(project.GetGuid(), state.m_sListedPath);
 
 			if (!RestartWorkbench(gprojPath, modName))
 				Workbench.Dialog(TITLE, "Redémarrage automatique impossible.\nFermez Workbench, rouvrez le projet puis relancez le plugin.");
@@ -267,9 +282,13 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	static string GetRestartReasons(notnull CK_ConfigurationScenarioProjectFile project, string modName)
 	{
 		string reasons;
+		string info;
 		string folderName = GetFolderName(project.GetPath());
-		if (folderName != modName)
+		CK_EConfigurationScenarioFolder folderState = GetFolderState(project, modName);
+		if (folderState == CK_EConfigurationScenarioFolder.TO_RENAME)
 			reasons += string.Format(" - dossier du mod renommé : %1 -> %2\n", folderName, modName);
+		else if (folderState == CK_EConfigurationScenarioFolder.TAKEN)
+			info += string.Format("\nLe dossier %1 existe déjà (autre projet) : le dossier %2 garde son nom.\n", modName, folderName);
 
 		if (GameProject.GetAddonID(project.GetGuid()) != project.GetValue("ID"))
 			reasons += string.Format(" - nom du mod : %1 (ID %2)\n", modName, project.GetValue("ID"));
@@ -281,7 +300,42 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		if (reasons.IsEmpty())
 			return string.Empty;
 
-		return "Workbench doit redémarrer :\n" + reasons;
+		return "Workbench doit redémarrer :\n" + reasons + info;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! .gproj path once the folder is renamed to modName (current path when no rename is planned)
+	static string GetRenamedProjectPath(notnull CK_ConfigurationScenarioProjectFile project, string modName)
+	{
+		string projectPath = CleanPath(project.GetPath());
+		if (GetFolderState(project, modName) != CK_EConfigurationScenarioFolder.TO_RENAME)
+			return projectPath;
+
+		string projectDirectory = GetDirectory(projectPath);
+		string parentDirectory = GetDirectory(projectDirectory.Substring(0, projectDirectory.Length() - 1));
+		return parentDirectory + modName + "/" + FilePath.StripPath(projectPath);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Is the project folder named modName? Workbench may give a short 8.3 path ("CK_OP_~1"): the folder named
+	//! modName next to it is then checked, by the GUID of its .gproj.
+	static CK_EConfigurationScenarioFolder GetFolderState(notnull CK_ConfigurationScenarioProjectFile project, string modName)
+	{
+		string projectPath = CleanPath(project.GetPath());
+		if (GetFolderName(projectPath) == modName)
+			return CK_EConfigurationScenarioFolder.RENAMED;
+
+		string projectDirectory = GetDirectory(projectPath);
+		string parentDirectory = GetDirectory(projectDirectory.Substring(0, projectDirectory.Length() - 1));
+		string target = parentDirectory + modName;
+		if (!FileIO.FileExists(target))
+			return CK_EConfigurationScenarioFolder.TO_RENAME;
+
+		CK_ConfigurationScenarioProjectFile other = new CK_ConfigurationScenarioProjectFile();
+		if (other.Load(target + "/" + FilePath.StripPath(projectPath)) && other.GetGuid() == project.GetGuid())
+			return CK_EConfigurationScenarioFolder.RENAMED;
+
+		return CK_EConfigurationScenarioFolder.TAKEN;
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -544,6 +598,8 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	{
 		CK_ConfigurationScenario_OperationDialog operationDialog = new CK_ConfigurationScenario_OperationDialog();
 		operationDialog.m_sNom = state.m_sOperation;
+		operationDialog.m_sLieu = state.m_sLocation;
+		operationDialog.m_sScenaristes = state.m_sAuthors;
 		if (state.HasDate())
 		{
 			operationDialog.m_iDate = PackDate(state.m_iYear, state.m_iMonth, state.m_iDay);
@@ -557,10 +613,12 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 
 		while (true)
 		{
-			if (!Workbench.ScriptDialog(TITLE, "Nom et date de l'opération.", operationDialog))
+			if (!Workbench.ScriptDialog(TITLE, "L'opération : nom, date, lieu et scénaristes.", operationDialog))
 				return false;
 
 			string operation = operationDialog.m_sNom.Trim();
+			string location = operationDialog.m_sLieu.Trim();
+			string authors = CleanAuthors(operationDialog.m_sScenaristes);
 			int pickedYear, pickedMonth, pickedDay;
 			UnpackDate(operationDialog.m_iDate, pickedYear, pickedMonth, pickedDay);
 
@@ -582,7 +640,9 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			preview.m_iDay = pickedDay;
 			string modName = preview.GetModName();
 
-			string confirmText = string.Format("Opération : %1\nDate : %2\n\nMod : %3\nMonde : Worlds/%3/%3.ent", operation, preview.GetDateText(), modName);
+			preview.m_sLocation = location;
+			preview.m_sAuthors = authors;
+			string confirmText = string.Format("Opération : %1\nDate : %2\nLieu : %3\nScénaristes : %4\n\nMod : %5\nMonde : Worlds/%5/%5.ent", operation, preview.GetDateText(), preview.GetLocation(), preview.GetAuthors(), modName);
 			CK_ConfigurationScenario_ConfirmDialog confirmDialog = new CK_ConfigurationScenario_ConfirmDialog();
 			if (!Workbench.ScriptDialog(TITLE, confirmText, confirmDialog))
 				return false;
@@ -594,10 +654,157 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			state.m_iYear = pickedYear;
 			state.m_iMonth = pickedMonth;
 			state.m_iDay = pickedDay;
+			state.m_sLocation = location;
+			state.m_sAuthors = authors;
 			return true;
 		}
 
 		return false;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Workbench launcher project lists ($profile:.projectList_<app>_<user>.conf): the entry of this project points to path,
+	//! added first when the project is not listed. Its entry is found by the GUID of the .gproj, or by previousPath (path
+	//! written before a restart whose rename failed). Workbench mounts every listed project at startup and only writes
+	//! these files from the launcher (new / open / add project), not when it closes.
+	static void UpdateProjectLists(string projectGuid, string path, string previousPath = string.Empty)
+	{
+		array<string> files = SCR_FileIOHelper.FindFiles("$profile:", ".conf");
+		foreach (string file : files)
+		{
+			//--- "$profile:.projectList_app1874910_user7656....conf" (no folder separator after the file system name)
+			if (FilePath.StripPath(file).Contains(".projectList_"))
+				UpdateProjectList(file, projectGuid, path, previousPath);
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! \return true when the list file was changed
+	static bool UpdateProjectList(string listFile, string projectGuid, string path, string previousPath)
+	{
+		FileHandle input = FileIO.OpenFile(listFile, FileMode.READ);
+		if (!input)
+			return false;
+
+		array<string> lines = {};
+		string line;
+		while (input.ReadLine(line) >= 0)
+		{
+			int length = line.Length();
+			if (length > 0 && line.ToAscii(length - 1) == 13)
+				line = line.Substring(0, length - 1);
+
+			lines.Insert(line);
+		}
+
+		input.Close();
+
+		path.Replace("\\", "/");
+		string target = NormalizeListPath(path);
+		string previous = NormalizeListPath(previousPath);
+		int projectsLine = -1;
+		bool listed;
+		bool changed;
+		for (int i = 0; i < lines.Count(); i++)
+		{
+			string trimmed = lines[i].Trim();
+			if (projectsLine < 0 && trimmed.StartsWith("Projects {"))
+				projectsLine = i;
+
+			if (!trimmed.StartsWith("FilePath \"") || !trimmed.EndsWith("\""))
+				continue;
+
+			string entry = trimmed.Substring(10, trimmed.Length() - 11);
+			string normalized = NormalizeListPath(entry);
+			bool isProject = normalized == target || (!previous.IsEmpty() && normalized == previous);
+			if (!isProject && FileIO.FileExists(entry))
+			{
+				CK_ConfigurationScenarioProjectFile other = new CK_ConfigurationScenarioProjectFile();
+				isProject = other.Load(entry) && other.GetGuid() == projectGuid;
+			}
+
+			if (!isProject)
+				continue;
+
+			//--- Second entry of the project: removed (WBProjectListItem { FilePath } block)
+			if (listed && i > 0 && i + 1 < lines.Count() && lines[i - 1].Trim() == "WBProjectListItem {" && lines[i + 1].Trim() == "}")
+			{
+				lines.RemoveOrdered(i + 1);
+				lines.RemoveOrdered(i);
+				lines.RemoveOrdered(i - 1);
+				i -= 2;
+				changed = true;
+				continue;
+			}
+
+			listed = true;
+			if (entry != path)
+			{
+				int indent = lines[i].IndexOf("FilePath");
+				lines[i] = lines[i].Substring(0, indent) + "FilePath \"" + path + "\"";
+				changed = true;
+			}
+		}
+
+		if (!listed)
+		{
+			if (projectsLine < 0)
+				return false;
+
+			lines.InsertAt("  }", projectsLine + 1);
+			lines.InsertAt("   FilePath \"" + path + "\"", projectsLine + 1);
+			lines.InsertAt("  WBProjectListItem {", projectsLine + 1);
+			changed = true;
+		}
+
+		if (!changed)
+			return false;
+
+		FileHandle output = FileIO.OpenFile(listFile, FileMode.WRITE);
+		if (!output)
+			return false;
+
+		foreach (string outputLine : lines)
+		{
+			output.WriteLine(outputLine);
+		}
+
+		output.Close();
+		Print(TITLE + ": projet dans la liste du launcher Workbench : " + path, LogLevel.NORMAL);
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static string NormalizeListPath(string path)
+	{
+		path.Replace("\\", "/");
+		path.ToLower();
+		return path;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "Jean ; Paul,, Marc" -> "Jean, Paul, Marc" (separators: comma, semicolon, slash, line break)
+	static string CleanAuthors(string text)
+	{
+		text.Replace(";", ",");
+		text.Replace("/", ",");
+		text.Replace("\n", ",");
+		array<string> parts = {};
+		text.Split(",", parts, true);
+		string result;
+		foreach (string part : parts)
+		{
+			string author = part.Trim();
+			if (author.IsEmpty())
+				continue;
+
+			if (!result.IsEmpty())
+				result += ", ";
+
+			result += author;
+		}
+
+		return result;
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -680,26 +887,57 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		string exeName = FilePath.StripPath(ToWindowsPath(exePath));
 
 		FileIO.MakeDirectory(PROFILE_DIR);
+		string profileDirectory;
+		if (!Workbench.GetAbsolutePath(PROFILE_DIR, profileDirectory, true))
+			return false;
+
+		string logPath = ToWindowsPath(CleanPath(profileDirectory) + "/restart.log");
 		string batchPath = PROFILE_DIR + "/restart.bat";
 		FileHandle file = FileIO.OpenFile(batchPath, FileMode.WRITE);
 		if (!file)
 			return false;
 
+		//--- Wait for Workbench to close, without time limit (it may ask to save first). CSV output: the table output of
+		//--- tasklist cuts image names at 25 characters ("ArmaReforgerWorkbenchStea"), the old wait never matched.
+		//--- The rename is retried: an antivirus, OneDrive, the Windows indexer or an Explorer window can hold the folder for a while.
+		//--- The project is reopened where its .gproj really is: the old folder while it still exists, else the new one.
 		file.WriteLine("@echo off");
 		file.WriteLine("chcp 65001 >nul");
-		file.WriteLine("for /l %%i in (1,1,120) do (");
-		file.WriteLine("  tasklist /fi \"imagename eq " + exeName + "\" 2>nul | find /i \"" + exeName + "\" >nul || goto start");
-		file.WriteLine("  ping -n 2 127.0.0.1 >nul");
-		file.WriteLine(")");
-		file.WriteLine(":start");
+		file.WriteLine("set \"LOG=" + logPath + "\"");
+		file.WriteLine("echo [%date% %time%] Redemarrage de Workbench > \"%LOG%\"");
+		file.WriteLine(":wait");
+		file.WriteLine("tasklist /fi \"imagename eq " + exeName + "\" /fo csv /nh 2>nul | find /i \"" + exeName + "\" >nul || goto closed");
+		file.WriteLine("ping -n 2 127.0.0.1 >nul");
+		file.WriteLine("goto wait");
+		file.WriteLine(":closed");
+		file.WriteLine("ping -n 3 127.0.0.1 >nul");
+		file.WriteLine("echo [%time%] Workbench ferme >> \"%LOG%\"");
 		file.WriteLine("set \"OLD=" + oldDirectory + "\"");
 		file.WriteLine("set \"NEW=" + newDirectory + "\"");
-		file.WriteLine("if /i not \"%OLD%\"==\"%NEW%\" if not exist \"%NEW%\" ren \"%OLD%\" \"" + newFolderName + "\"");
-		file.WriteLine("set \"GPROJ=%OLD%\\" + gprojName + "\"");
-		file.WriteLine("if exist \"%NEW%\\" + gprojName + "\" set \"GPROJ=%NEW%\\" + gprojName + "\"");
+		file.WriteLine("set \"GPROJNAME=" + gprojName + "\"");
+		file.WriteLine("echo ancien dossier : %OLD% >> \"%LOG%\"");
+		file.WriteLine("echo nouveau dossier : %NEW% >> \"%LOG%\"");
+		file.WriteLine("if /i \"%OLD%\"==\"%NEW%\" goto open");
+		file.WriteLine("if exist \"%NEW%\\\" goto open");
+		file.WriteLine("set /a TRY=0");
+		file.WriteLine(":rename");
+		file.WriteLine("ren \"%OLD%\" \"" + newFolderName + "\" >> \"%LOG%\" 2>&1 && goto renamed");
+		file.WriteLine("set /a TRY+=1");
+		file.WriteLine("if %TRY% geq 30 goto open");
+		file.WriteLine("ping -n 2 127.0.0.1 >nul");
+		file.WriteLine("goto rename");
+		file.WriteLine(":renamed");
+		file.WriteLine("echo [%time%] dossier renomme >> \"%LOG%\"");
+		file.WriteLine(":open");
+		file.WriteLine("set \"GPROJ=\"");
+		file.WriteLine("if exist \"%OLD%\\%GPROJNAME%\" set \"GPROJ=%OLD%\\%GPROJNAME%\"");
+		file.WriteLine("if not defined GPROJ if exist \"%NEW%\\%GPROJNAME%\" set \"GPROJ=%NEW%\\%GPROJNAME%\"");
+		file.WriteLine("if not defined GPROJ echo ERREUR : %GPROJNAME% introuvable >> \"%LOG%\"");
+		file.WriteLine("echo projet ouvert : %GPROJ% >> \"%LOG%\"");
 		if (!gameDirectory.IsEmpty())
 			file.WriteLine("cd /d \"" + ToWindowsPath(gameDirectory) + "\"");
 
+		file.WriteLine("echo commande : \"" + ToWindowsPath(exePath) + "\" " + arguments + " >> \"%LOG%\"");
 		file.WriteLine("start \"\" \"" + ToWindowsPath(exePath) + "\" " + arguments);
 		file.Close();
 
@@ -820,9 +1058,18 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		string fileSystem = GetProjectFileSystem(state.m_sProjectGuid);
 		string notes;
 
-		string folderName = GetFolderName(project.GetPath());
-		if (folderName != modName && !folderName.Contains("~"))
-			notes += string.Format("Le dossier du mod n'a pas pu être renommé (%1 existe déjà ou était ouvert ailleurs).\n", modName);
+		//--- Launcher project list: where the project really is now (also fixes the entry when the rename failed)
+		UpdateProjectLists(project.GetGuid(), CleanPath(project.GetPath()), state.m_sListedPath);
+
+		CK_EConfigurationScenarioFolder folderState = GetFolderState(project, modName);
+		if (folderState == CK_EConfigurationScenarioFolder.TAKEN)
+			notes += string.Format("Le dossier %1 existe déjà (autre projet) : le dossier du mod garde son nom.\n", modName);
+		else if (folderState == CK_EConfigurationScenarioFolder.TO_RENAME)
+		{
+			string restartLog;
+			Workbench.GetAbsolutePath(PROFILE_DIR + "/restart.log", restartLog, false);
+			notes += string.Format("Le dossier du mod n'a pas pu être renommé en %1 (dossier utilisé par un autre programme ?). Détails : %2\n", modName, ToWindowsPath(restartLog));
+		}
 
 		//--- Sub-scene
 		if (!Workbench.OpenModule(WorldEditor))
@@ -861,9 +1108,15 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		//--- CK configs of the mod
 		ResourceName briefing = CreateBriefingConfig(fileSystem, modName, state);
 		ResourceName loadouts = CreateLoadoutsConfig(fileSystem, modName);
+		ResourceName outfit = CreateBriefingOutfitPrefab(fileSystem, modName);
+		if (!AddBriefingOutfitLoadout(loadouts, outfit))
+			notes += string.Format("La tenue de briefing n'a pas pu être ajoutée aux loadouts (%1).\n", GetBriefingOutfitPath(modName));
 
 		//--- Game Mode Setup, forced on Game Master, mission header named after the operation
-		if (!RunGameModeSetup(state.m_sOperation, briefing))
+		if (!HasHeaderTextures(fileSystem))
+			notes += "Images du chargement et de l'aperçu absentes du mod : copiez le dossier UI du plugin à côté de Scripts, puis relancez le plugin.\n";
+
+		if (!RunGameModeSetup(state, briefing))
 			return;
 
 		//--- Elements
@@ -1246,10 +1499,152 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
+	static string GetBriefingOutfitPath(string modName)
+	{
+		return "Prefabs/CK/" + modName + "_TenueBriefing.et";
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Character of the briefing outfit (US soldier, its equipment is the loadout): BME uniform, army boots, no helmet,
+	//! CK Glock 17 (a magazine in the weapon, 2 in the pants), SICS in the pants, watch. Kept as is when it exists.
+	//! The BME uniform (French Uniform), CK_Weapons and CK_Equipment are not dependencies of the scenario: the items
+	//! of a mod that is not loaded are just missing from the loadout.
+	static ResourceName CreateBriefingOutfitPrefab(string fileSystem, string modName)
+	{
+		string path = fileSystem + GetBriefingOutfitPath(modName);
+		string absolutePath;
+		if (fileSystem.IsEmpty() || !Workbench.GetAbsolutePath(path, absolutePath, false))
+			return ResourceName.Empty;
+
+		absolutePath = CleanPath(absolutePath);
+		if (!FileIO.FileExists(absolutePath))
+		{
+			FileIO.MakeDirectory(GetDirectory(absolutePath));
+			FileHandle file = FileIO.OpenFile(absolutePath, FileMode.WRITE);
+			if (!file)
+				return ResourceName.Empty;
+
+			string pants = "{2461A685FE48E405}Prefabs/Characters/Uniforms/Pants_VKPO_BME.et";
+			string magazine = "\"{3C9D22848B84856E}Prefabs/Weapons/Handguns/CK_Glock17/CK_Magazine_9x19_Glock17_17rnd.et\"";
+			file.WriteLine("SCR_ChimeraCharacter : \"{836E7E39AAC5888B}Prefabs/Characters/Factions/BLUFOR/US_Army/Character_US_Base.et\" {");
+			file.WriteLine(" ID \"520EC961A090BBD5\"");
+			file.WriteLine(" components {");
+			file.WriteLine("  SCR_CharacterInventoryStorageComponent \"{520EA1D2DB118DAC}\" {");
+			file.WriteLine("   components {");
+			file.WriteLine("    SCR_EquipmentStorageComponent \"{56B49DA9722B635D}\" {");
+			file.WriteLine("     InitialStorageSlots {");
+			file.WriteLine("      SCR_EquipmentStorageSlot WristwatchSlot {");
+			file.WriteLine("       Prefab \"{78ED4FEF62BBA728}Prefabs/Items/Equipment/Watches/Watch_SandY184A.et\"");
+			file.WriteLine("      }");
+			file.WriteLine("     }");
+			file.WriteLine("    }");
+			file.WriteLine("   }");
+			file.WriteLine("  }");
+			file.WriteLine("  CharacterWeaponSlotComponent \"{520EA1D2F659CFDC}\" {");
+			file.WriteLine("   WeaponTemplate \"{C81DBB62917BCE20}Prefabs/Weapons/Handguns/CK_Glock17/CK_Glock17.et\"");
+			file.WriteLine("  }");
+			file.WriteLine("  BaseLoadoutManagerComponent \"{520EA1D2DB11821E}\" {");
+			file.WriteLine("   Slots {");
+			file.WriteLine("    LoadoutSlotInfo Hat {");
+			file.WriteLine("     Prefab \"\"");
+			file.WriteLine("    }");
+			file.WriteLine("    LoadoutSlotInfo Jacket {");
+			file.WriteLine("     Prefab \"{F60E4C4476E8130F}Prefabs/Characters/Uniforms/VKPO/F3_BME.et\"");
+			file.WriteLine("    }");
+			file.WriteLine("    LoadoutSlotInfo Pants {");
+			file.WriteLine("     Prefab \"" + pants + "\"");
+			file.WriteLine("    }");
+			file.WriteLine("    SCR_FeetLoadoutSlotInfo Boots {");
+			file.WriteLine("     Prefab \"{DAAFD15478BDE1C3}Prefabs/Characters/Footwear/CombatBoots_US_01.et\"");
+			file.WriteLine("    }");
+			file.WriteLine("   }");
+			file.WriteLine("  }");
+			file.WriteLine("  SCR_InventoryStorageManagerComponent \"{520EA1D2DB118DE5}\" {");
+			file.WriteLine("   InitialInventoryItems {");
+			file.WriteLine("    ItemsInitConfigurationItem \"{6CB1E0A0B1E0A001}\" {");
+			file.WriteLine("     TargetStorage \"Pants/" + FilePath.StripPath(pants) + "\"");
+			file.WriteLine("     PrefabsToSpawn {");
+			file.WriteLine("      " + magazine + " " + magazine + " \"{85427A0E24357BE6}Prefabs/Items/Equipment/CK_SICS/CK_SICS.et\"");
+			file.WriteLine("     }");
+			file.WriteLine("    }");
+			file.WriteLine("   }");
+			file.WriteLine("  }");
+			file.WriteLine(" }");
+			file.WriteLine("}");
+			file.Close();
+
+			ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
+			resourceManager.RegisterResourceFile(absolutePath, false);
+			Print(TITLE + ": tenue de briefing créée : " + absolutePath, LogLevel.NORMAL);
+		}
+
+		return GetResourceNameFromFile(absolutePath, path);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "Tenue de briefing" first in the loadouts of the operation (CK_MissionLoadoutList), when no loadout has that name
+	//! \return true when the loadout is in the list
+	static bool AddBriefingOutfitLoadout(ResourceName loadouts, ResourceName outfit)
+	{
+		if (loadouts.IsEmpty() || outfit.IsEmpty())
+			return false;
+
+		Resource listResource = BaseContainerTools.LoadContainer(loadouts);
+		if (!listResource || !listResource.IsValid())
+			return false;
+
+		BaseContainer list = listResource.GetResource().ToBaseContainer();
+		array<BaseContainer> existing = {};
+		BaseContainerList current = list.GetObjectArray("m_aLoadouts");
+		for (int i = 0; current && i < current.Count(); i++)
+		{
+			BaseContainer existingLoadout = current.Get(i);
+			string name;
+			existingLoadout.Get("m_sName", name);
+			if (name == BRIEFING_OUTFIT_NAME)
+				return true;
+
+			existing.Insert(existingLoadout);
+		}
+
+		Resource loadoutResource = BaseContainerTools.CreateContainer("CK_MissionLoadout");
+		if (!loadoutResource || !loadoutResource.IsValid())
+			return false;
+
+		BaseContainer loadout = loadoutResource.GetResource().ToBaseContainer();
+		loadout.Set("m_sName", BRIEFING_OUTFIT_NAME);
+		loadout.Set("m_sDescription", "Treillis BME, Glock 17 (3 chargeurs), SICS, montre");
+		loadout.Set("m_sCharacterPrefab", outfit);
+		array<string> factionKeys = { FACTION_KEY };
+		loadout.Set("m_aFactionKeys", factionKeys);
+
+		//--- First of the list, the loadouts already there after it
+		BaseContainerList loadoutList = list.SetObjectArray("m_aLoadouts");
+		if (!loadoutList)
+			return false;
+
+		if (loadoutList.Count() == 0 && !existing.IsEmpty())
+		{
+			loadoutList.Insert(loadout);
+			foreach (BaseContainer kept : existing)
+			{
+				loadoutList.Insert(kept);
+			}
+		}
+		else
+		{
+			loadoutList.Insert(loadout, 0);
+		}
+
+		return BaseContainerTools.SaveContainer(list, loadouts);
+	}
+
+	//------------------------------------------------------------------------------------------------
 	//! Mission header of the loaded world, created from the Game Master template if missing:
-	//! name = operation, CK Briefing = briefing (when empty). Called by CK_ConfigurationScenario_GameModeSetup.
+	//! name = operation, author = scénaristes, CK description and pictures, CK Briefing = briefing (when empty).
+	//! Called by CK_ConfigurationScenario_GameModeSetup.
 	//! \return true when the header exists
-	static bool CreateMissionHeader(ResourceName template, string operation, ResourceName briefing, out string message)
+	static bool CreateMissionHeader(ResourceName template, notnull CK_ConfigurationScenarioState state, ResourceName briefing, out string message)
 	{
 		string worldPath = SCR_WorldEditorToolHelper.GetWorldPath();
 		if (worldPath.IsEmpty())
@@ -1259,6 +1654,8 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		string worldName = FilePath.StripExtension(FilePath.StripPath(worldPath));
 		string headerPath = fileSystem + "Missions/" + worldName + ".conf";
 		ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
+		bool hasTextures = HasHeaderTextures(fileSystem);
+		string operation = state.m_sOperation;
 
 		ResourceName header = FindMissionHeader(fileSystem, GetCurrentWorld());
 		if (!header.IsEmpty())
@@ -1268,7 +1665,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 				return false;
 
 			BaseContainer headerContainer = headerResource.GetResource().ToBaseContainer();
-			headerContainer.Set("m_sName", operation);
+			SetMissionHeaderValues(headerContainer, state, hasTextures);
 			ResourceName currentBriefing;
 			headerContainer.Get("m_sCK_Briefing", currentBriefing);
 			if (currentBriefing.IsEmpty() && !briefing.IsEmpty())
@@ -1277,7 +1674,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			if (!BaseContainerTools.SaveContainer(headerContainer, header))
 				return false;
 
-			message = string.Format("Mission header : %1\nNom : %2", header.GetPath(), operation);
+			message = string.Format("Mission header : %1\nNom : %2\nAuteur : %3", header.GetPath(), operation, state.GetAuthors());
 			return true;
 		}
 
@@ -1297,7 +1694,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			return false;
 
 		missionHeader.Set("World", worldMeta.GetResourceID());
-		missionHeader.Set("m_sName", operation);
+		SetMissionHeaderValues(missionHeader, state, hasTextures);
 		if (!briefing.IsEmpty())
 			missionHeader.Set("m_sCK_Briefing", briefing);
 
@@ -1310,8 +1707,40 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 
 		resourceManager.RegisterResourceFile(absHeader, false);
 		resourceManager.SetOpenedResource(headerPath);
-		message = string.Format("Mission header créé : Missions/%1.conf\nNom : %2", worldName, operation);
+		message = string.Format("Mission header créé : Missions/%1.conf\nNom : %2\nAuteur : %3", worldName, operation, state.GetAuthors());
 		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Name = operation, author = scénaristes. Description and pictures: CK values, unless the scenario maker changed them
+	//! (only unset, empty or template placeholder values are replaced).
+	static void SetMissionHeaderValues(notnull BaseContainer header, notnull CK_ConfigurationScenarioState state, bool hasTextures)
+	{
+		header.Set("m_sName", state.m_sOperation);
+		header.Set("m_sAuthor", state.GetAuthors());
+		ReplaceDefault(header, "m_sDescription", HEADER_DESCRIPTION, "<Insert world description>");
+		ReplaceDefault(header, "m_sIcon", HEADER_ICON, "{6CFADAEE9287D1D2}UI/Textures/WorldSelection/Default.edds");
+		if (!hasTextures)
+			return;
+
+		ReplaceDefault(header, "m_sLoadingScreen", HEADER_LOADING_SCREEN, "{C58FCC06AF13075B}UI/Textures/MissionLoadingScreens/placeholder_1.edds");
+		ReplaceDefault(header, "m_sPreviewImage", HEADER_PREVIEW_IMAGE, "{C58FCC06AF13075B}UI/Textures/MissionLoadingScreens/placeholder_1.edds");
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static void ReplaceDefault(notnull BaseContainer container, string variable, string value, string placeholder)
+	{
+		string current;
+		container.Get(variable, current);
+		if (!container.IsVariableSetDirectly(variable) || current.IsEmpty() || current == placeholder)
+			container.Set(variable, value);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Loading screen and preview textures of the plugin in the mod (UI folder of the plugin copied with Scripts)
+	static bool HasHeaderTextures(string fileSystem)
+	{
+		return FileIO.FileExists(fileSystem + GetResourcePath(HEADER_LOADING_SCREEN)) && FileIO.FileExists(fileSystem + GetResourcePath(HEADER_PREVIEW_IMAGE));
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -1416,7 +1845,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
-	protected bool RunGameModeSetup(string operation, ResourceName briefing)
+	protected bool RunGameModeSetup(notnull CK_ConfigurationScenarioState state, ResourceName briefing)
 	{
 		//--- Plugins cannot be created with new: use the instance Workbench created
 		WorldEditor worldEditor = Workbench.GetModule(WorldEditor);
@@ -1429,12 +1858,12 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 
 		while (true)
 		{
-			gameModeSetup.SetOperation(operation, briefing);
+			gameModeSetup.SetOperation(state, briefing);
 			gameModeSetup.Run();
-			gameModeSetup.SetOperation(string.Empty, ResourceName.Empty);
+			gameModeSetup.SetOperation(null, ResourceName.Empty);
 
-			set<string> prefabGuids = new set<string>();
-			if (ScanSubScene(prefabGuids))
+			//--- A terrain that already has a game mode (GM_Eden, GM_Arland...): Game Mode Setup finds it valid and creates nothing
+			if (FindWorldGameMode())
 				return true;
 
 			CK_ConfigurationScenario_GameModeDialog gameModeDialog = new CK_ConfigurationScenario_GameModeDialog();
@@ -1495,6 +1924,35 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
+	//! \return game mode of the world: the one of the scenario sub-scene, else the one of a parent world (e.g. GM_Eden)
+	static IEntitySource FindWorldGameMode()
+	{
+		IEntitySource gameMode = FindGameMode();
+		if (gameMode)
+			return gameMode;
+
+		WorldEditorAPI api = SCR_WorldEditorToolHelper.GetWorldEditorAPI();
+		if (!api)
+			return null;
+
+		for (int subScene = api.GetCurrentSubScene() - 1; subScene >= 0; subScene--)
+		{
+			for (int i = 0, count = api.GetEntityCount(subScene); i < count; i++)
+			{
+				IEntitySource entitySource = api.GetEntity(subScene, i);
+				if (!entitySource)
+					continue;
+
+				typename type = entitySource.GetClassName().ToType();
+				if (type && type.IsInherited(BaseGameMode))
+					return entitySource;
+			}
+		}
+
+		return null;
+	}
+
+	//------------------------------------------------------------------------------------------------
 	//! \return first top-level entity of the current sub-scene made from this prefab (or a child prefab), null if none
 	static IEntitySource FindEntityByPrefab(ResourceName prefab)
 	{
@@ -1530,6 +1988,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		//--- CK_Core
 		items.Insert(new CK_ConfigurationScenarioItem("Système des troops (CK_Troops)", "{5C1E7A93B2D4F086}Prefabs/CK/CK_Troops.et", "CK_Troops", -2, 0, LAYER_SYSTEMS, CK_EConfigurationScenarioItem.TROOPS));
 		items.Insert(new CK_ConfigurationScenarioItem("Infos de mission du menu CK (CK_MissionSettings)", "{2B7E5A93D1C40F68}Prefabs/CK/CK_MissionSettings.et", "CK_MissionSettings", 2, 0, LAYER_SYSTEMS, CK_EConfigurationScenarioItem.MISSION_SETTINGS));
+		items.Insert(new CK_ConfigurationScenarioItem("Intro de la mission (CK_MissionIntro)", MISSION_INTRO_PREFAB, "CK_MissionIntro", 0, 0, LAYER_SYSTEMS));
 
 		//--- CK_Props / CK_Structures
 		items.Insert(new CK_ConfigurationScenarioItem("Estrade avec insigne CK", "{037D8AF0FEA3F550}Prefabs/Props/Military/Camps/Platform_01_CK.et", string.Empty, 0, 12, LAYER_BASE));
@@ -1559,7 +2018,18 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		string listPresent;
 		string listMissing;
 		string listFailed;
-		PlaceAndConfigure(api, briefing, loadouts, listPlaced, listPresent, listMissing, listFailed);
+		PlaceAndConfigure(api, briefing, loadouts, state.m_sOperation, state.GetLocation(), listPlaced, listPresent, listMissing, listFailed);
+
+		//--- The faction can only be made playable in a game mode of the scenario itself: a sub-scene cannot save changes
+		//--- to an entity of its parent world (game mode of GM_Eden, GM_Arland...)
+		IEntitySource gameMode = FindWorldGameMode();
+		bool factionPlayable = FindGameMode() && SetFactionPlayable(api, FACTION_KEY);
+		if (!gameMode)
+			notes += "Aucun mode de jeu dans le monde : ajoutez-en un, puis rendez la faction " + FACTION_KEY + " jouable.\n";
+		else if (!FindGameMode())
+			notes += string.Format("Le mode de jeu vient du terrain (%1) : le scénario ne peut pas le modifier, la faction %2 n'est pas jouable au départ. Le Game Master la rend jouable en jeu.\n", gameMode.GetName(), FACTION_KEY);
+		else if (!factionPlayable)
+			notes += string.Format("Faction %1 non jouable dans le mode de jeu %2 : cochez « Is Playable » dans son gestionnaire de factions.\n", FACTION_KEY, gameMode.GetName());
 
 		bool saved = worldEditor.Save();
 		state.m_bPending = false;
@@ -1583,15 +2053,19 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		result += string.Format("Calques : %1 (systèmes), %2 (FOB : arsenaux, dépôts, spawn), %3 à %4 (un par vendredi). Calque actif : %3.\n\n", LAYER_SYSTEMS, LAYER_BASE, LAYER_DAY + "1", LAYER_DAY + DAY_COUNT.ToString());
 		result += "À modifier dans le mod :\n";
 		result += string.Format(" - monde : Worlds/%1/%1.ent\n", modName);
-		result += string.Format(" - mission header (nom, description, joueurs) : Missions/%1.conf\n", modName);
+		result += string.Format(" - mission header (nom, auteurs, description, images, joueurs) : Missions/%1.conf\n", modName);
 		if (!briefing.IsEmpty())
 			result += " - briefing du menu CK : " + briefing.GetPath() + "\n";
 
 		if (!loadouts.IsEmpty())
-			result += " - loadouts du menu CK : " + loadouts.GetPath() + "\n";
+			result += string.Format(" - loadouts du menu CK : %1 (dont « %2 » : %3)\n", loadouts.GetPath(), BRIEFING_OUTFIT_NAME, GetBriefingOutfitPath(modName));
 
 		result += " - troops : entité CK_Troops du monde (CK Core n'a pas de .conf pour les troops)\n";
-		result += string.Format(" - point de spawn : entité SpawnPoint_BaseAvancee (faction %1 jouable)\n", FACTION_KEY);
+		result += " - intro (titre, lieu, image) : entité CK_MissionIntro du monde\n";
+		if (factionPlayable)
+			result += string.Format(" - point de spawn : entité SpawnPoint_BaseAvancee (faction %1 jouable)\n", FACTION_KEY);
+		else
+			result += " - point de spawn : entité SpawnPoint_BaseAvancee\n";
 
 		if (!saved)
 			result += "\nLe monde n'a pas pu être enregistré : enregistrez-le (Ctrl+S).\n";
@@ -1613,7 +2087,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 
 	//------------------------------------------------------------------------------------------------
 	//! Place the missing elements, configure CK_MissionSettings, the spawn point and the faction (one undo step)
-	static void PlaceAndConfigure(notnull WorldEditorAPI api, ResourceName briefing, ResourceName loadouts, out string listPlaced, out string listPresent, out string listMissing, out string listFailed)
+	static void PlaceAndConfigure(notnull WorldEditorAPI api, ResourceName briefing, ResourceName loadouts, string operation, string location, out string listPlaced, out string listPresent, out string listMissing, out string listFailed)
 	{
 		array<ref CK_ConfigurationScenarioItem> items = {};
 		GetItems(items);
@@ -1664,6 +2138,14 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		{
 			SetComponentResourceIfEmpty(api, missionSettings, "CK_MissionBriefingComponent", "m_sBriefingConfig", briefing);
 			SetComponentResourceIfEmpty(api, missionSettings, "CK_MissionLoadoutsComponent", "m_sLoadoutList", loadouts);
+		}
+
+		//--- Intro: the operation instead of "Commando Kieffer 2004", where it takes place
+		IEntitySource intro = FindEntityByPrefab(MISSION_INTRO_PREFAB);
+		if (intro && !operation.IsEmpty())
+		{
+			api.SetVariableValue(intro, { ContainerIdPathEntry("CK_MissionIntroComponent") }, "m_sTitle", operation);
+			api.SetVariableValue(intro, { ContainerIdPathEntry("CK_MissionIntroComponent") }, "m_sLocation", location);
 		}
 
 		//--- Players can spawn without the Game Master making the faction playable
@@ -1835,13 +2317,14 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 [WorkbenchPluginAttribute(name: "CK - Game Mode Setup (Game Master)", description: "Game Mode Setup vanilla, toujours en Game Master", wbModules: { "WorldEditor" }, awesomeFontCode: 0xF6E8)]
 class CK_ConfigurationScenario_GameModeSetup : SCR_GameModeSetupPlugin
 {
-	protected string m_sCKOperation;
+	protected ref CK_ConfigurationScenarioState m_CKState;
 	protected ResourceName m_sCKBriefing;
 
 	//------------------------------------------------------------------------------------------------
-	void SetOperation(string operation, ResourceName briefing)
+	//! state null: vanilla behaviour
+	void SetOperation(CK_ConfigurationScenarioState state, ResourceName briefing)
 	{
-		m_sCKOperation = operation;
+		m_CKState = state;
 		m_sCKBriefing = briefing;
 	}
 
@@ -1864,14 +2347,14 @@ class CK_ConfigurationScenario_GameModeSetup : SCR_GameModeSetupPlugin
 	override protected void RunMissionHeader()
 	{
 		//--- Started on its own: vanilla header step
-		if (m_sCKOperation.IsEmpty())
+		if (!m_CKState || m_CKState.m_sOperation.IsEmpty())
 		{
 			super.RunMissionHeader();
 			return;
 		}
 
 		m_sDialogMessageMissionHeader = string.Empty;
-		m_bIsMissionHeaderValid = CK_ConfigurationScenarioPlugin.CreateMissionHeader(m_sTemplate, m_sCKOperation, m_sCKBriefing, m_sDialogMessageMissionHeader);
+		m_bIsMissionHeaderValid = CK_ConfigurationScenarioPlugin.CreateMissionHeader(m_sTemplate, m_CKState, m_sCKBriefing, m_sDialogMessageMissionHeader);
 		if (!m_bIsMissionHeaderValid)
 			m_sDialogMessageMissionHeader = "Le mission header n'a pas pu être créé.";
 
@@ -1891,7 +2374,31 @@ class CK_ConfigurationScenarioState
 	int m_iYear;
 	int m_iMonth;
 	int m_iDay;
+	string m_sLocation;		//!< as typed, empty: default
+	string m_sAuthors;		//!< "Jean, Paul", empty: default
+	string m_sListedPath;	//!< .gproj path put in the launcher project lists before the restart
 	bool m_bPending;
+
+	static const string DEFAULT_LOCATION = "Quelque part dans le monde";
+	static const string DEFAULT_AUTHORS = "Commando Kieffer";
+
+	//------------------------------------------------------------------------------------------------
+	string GetLocation()
+	{
+		if (m_sLocation.IsEmpty())
+			return DEFAULT_LOCATION;
+
+		return m_sLocation;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	string GetAuthors()
+	{
+		if (m_sAuthors.IsEmpty())
+			return DEFAULT_AUTHORS;
+
+		return m_sAuthors;
+	}
 
 	//------------------------------------------------------------------------------------------------
 	static string GetPath(string projectGuid)
@@ -1925,6 +2432,9 @@ class CK_ConfigurationScenarioState
 				case "year": state.m_iYear = value.ToInt(); break;
 				case "month": state.m_iMonth = value.ToInt(); break;
 				case "day": state.m_iDay = value.ToInt(); break;
+				case "location": state.m_sLocation = value; break;
+				case "authors": state.m_sAuthors = value; break;
+				case "listed": state.m_sListedPath = value; break;
 				case "pending": state.m_bPending = value == "1"; break;
 			}
 		}
@@ -1946,6 +2456,9 @@ class CK_ConfigurationScenarioState
 		file.WriteLine("year=" + m_iYear.ToString());
 		file.WriteLine("month=" + m_iMonth.ToString());
 		file.WriteLine("day=" + m_iDay.ToString());
+		file.WriteLine("location=" + m_sLocation);
+		file.WriteLine("authors=" + m_sAuthors);
+		file.WriteLine("listed=" + m_sListedPath);
 		if (m_bPending)
 			file.WriteLine("pending=1");
 		else
@@ -1983,6 +2496,14 @@ class CK_ConfigurationScenarioState
 	{
 		return string.Format("%1 %2 %3", m_iDay, CK_ConfigurationScenarioPlugin.GetMonthName(m_iMonth), m_iYear);
 	}
+}
+
+//------------------------------------------------------------------------------------------------
+enum CK_EConfigurationScenarioFolder
+{
+	RENAMED,
+	TO_RENAME,
+	TAKEN,
 }
 
 //------------------------------------------------------------------------------------------------
@@ -2448,6 +2969,12 @@ class CK_ConfigurationScenario_OperationDialog
 
 	[Attribute(defvalue: "0", uiwidget: UIWidgets.Date, desc: "Date de l'opération : nom du mod et du monde (CK_Op_année_mois_jour)")]
 	int m_iDate;
+
+	[Attribute(defvalue: "", uiwidget: UIWidgets.EditBox, desc: "Où se passe l'opération : ville et/ou pays (intro de la mission). Vide : Quelque part dans le monde")]
+	string m_sLieu;
+
+	[Attribute(defvalue: "", uiwidget: UIWidgets.EditBox, desc: "Scénaristes, séparés par des virgules (auteur du mission header). Vide : Commando Kieffer")]
+	string m_sScenaristes;
 
 	//------------------------------------------------------------------------------------------------
 	[ButtonAttribute("Annuler")]
