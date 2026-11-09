@@ -34,7 +34,7 @@ Le plugin doit être dans le projet du scénario lui-même : Workbench ne compil
 Lancez **Plugins > CK - Configuration Scénario**. La première fois dans une session, Workbench demande d'autoriser le script (il lit et modifie `addon.gproj`) : acceptez. Si vous avez refusé, redémarrez Workbench.
 
 1. **Dépendances** : les 3 mods CK sont ajoutés au projet. Répondez **Oui** pour ajouter d'autres mods, et collez leurs GUID (un par ligne, ou séparés par des virgules).
-2. **Terrain** : choisissez le monde du terrain (`.ent`), par ex. Everon ou Arland. Le scénario sera une sous-scène de ce terrain. Un monde qui a déjà un mode de jeu (par ex. `GM_Eden`, `GM_Arland`) convient aussi : Game Mode Setup le trouve valide et ne crée rien, le plugin utilise ce mode de jeu. Ce mode de jeu appartient au terrain et le scénario ne peut pas le modifier : la faction US n'est pas jouable au départ, le Game Master l'active en jeu.
+2. **Terrain** : choisissez le monde du terrain (`.ent`), par ex. Everon ou Arland. Le scénario sera une sous-scène de ce terrain. Un monde qui a déjà un mode de jeu (par ex. `GM_Eden`, `GM_Arland`) convient aussi : Game Mode Setup le trouve valide et ne crée rien, le plugin utilise ce mode de jeu. Ce mode de jeu appartient au terrain et le scénario ne peut pas le modifier : les factions US et USSR ne sont pas jouables au départ, le Game Master les active en jeu.
 3. **Opération** : saisissez le nom de l'opération, choisissez la date, puis indiquez le lieu (ville et/ou pays) et les scénaristes (séparés par des virgules). Lieu vide : « Quelque part dans le monde ». Scénaristes vides : « Commando Kieffer ». Le plugin affiche le récapitulatif et le nom du mod obtenu : cliquez sur **Valider**, ou sur **Modifier** pour corriger.
 4. **Redémarrage** : cliquez sur **Redémarrer Workbench** (enregistrez votre travail avant). Workbench se ferme, le dossier du mod est renommé, puis Workbench rouvre le projet renommé et le plugin reprend tout seul. Dans la liste du launcher Workbench, le projet renommé remplace l'ancien chemin (ou y est ajouté). Si Workbench ne se rouvre pas sur le projet, ouvrez-le depuis le launcher, relancez le plugin et cliquez sur **Continuer** : rien n'est perdu.
 5. **Monde et calques** : le plugin crée et ouvre `Worlds/<mod>/<mod>.ent`, puis crée les calques de l'opération.
@@ -105,15 +105,17 @@ French Uniform, CK Weapons et CK Equipment ne sont pas ajoutés aux dépendances
 | Arsenaux armes, munitions, médical, équipement | `Base_Avancee` | Arma Reforger | `Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_*_US.et` |
 | Point de spawn « Base avancée » | `Base_Avancee` | Arma Reforger | `Prefabs/MP/Spawning/SpawnPoint_US.et` |
 
-Point de spawn : en Game Master, les factions ne sont pas jouables au départ (le GM doit les activer). Le plugin rend la faction US jouable dans le gestionnaire de factions du mode de jeu, pour que les joueurs puissent se déployer sur « Base avancée » dès le début.
+Factions : en Game Master, aucune faction n'est jouable au départ. Le plugin rend US et USSR jouables dans le gestionnaire de factions du mode de jeu, comme `FactionManager_USxUSSR` (ce prefab n'est pas ajouté : il entrerait en conflit avec le gestionnaire du Game Master). Le spawn « Base avancée » et la tenue de briefing sont pour US : pour jouer USSR, ajoutez-lui un point de spawn et des tenues.
 
 ## Si le redémarrage se passe mal
 
-Le redémarrage écrit son déroulé dans `Documents\My Games\ArmaReforgerWorkbench\profile\CK_ConfigurationScenario\restart.log` : dossier avant et après, renommage réussi ou non, projet rouvert. Joignez ce fichier si vous signalez un problème.
+Le redémarrage écrit son déroulé dans `Documents\My Games\ArmaReforgerWorkbench\profile\CK_ConfigurationScenario\restart.log` : dossier avant et après, renommage réussi ou non, dossier du jeu, commande lancée, puis « Workbench rouvert, plugin lancé dans le projet » si le plugin a bien repris. Si vous signalez un problème, joignez ce fichier et le `console.log` de la session rouverte (dernier dossier de `Documents\My Games\ArmaReforgerWorkbench\logs`).
 
 - **Le dossier n'est pas renommé** : un programme l'utilisait (explorateur ouvert dedans, VS Code, OneDrive, antivirus). Le plugin rouvre alors le projet sous son ancien nom et le signale à la fin. Fermez ce programme et renommez le dossier vous-même, Workbench fermé.
 - **Un dossier porte déjà le nom du mod** (autre scénario à la même date) : le dossier garde son nom, le plugin le signale avant de redémarrer.
-- **Workbench ne se rouvre pas** : ouvrez le projet depuis le launcher (le plugin y a mis le nouveau chemin), puis relancez le plugin et cliquez sur **Continuer**.
+- **Workbench rouvre le launcher** : le plugin n'a pas trouvé le dossier d'Arma Reforger ou le `.gproj`. Ouvrez le projet renommé (en tête de liste), relancez le plugin et cliquez sur **Continuer**.
+- **Workbench s'ouvre sur le projet ArmaReforger** : il n'a pas trouvé une dépendance du scénario (son `console.log` indique « dependency … can't be added »). Le plugin donne à Workbench les projets du launcher et les mods téléchargés dans `Documents\My Games\ArmaReforger\addons` : un mod rangé ailleurs n'est pas trouvé. Fermez Workbench, ouvrez le projet depuis le launcher, relancez le plugin et cliquez sur **Continuer**.
+- **Workbench ne se rouvre pas, ou s'ouvre sur un autre projet** : fermez-le, ouvrez le projet depuis le launcher (le plugin y a mis le nouveau chemin), puis relancez le plugin et cliquez sur **Continuer**.
 - **Ancienne entrée dans le launcher** (projet renommé avec une version précédente du plugin) : retirez-la du launcher ; relancer le plugin sur le projet l'y ajoute sous son nouveau nom.
 
 ## Bon à savoir

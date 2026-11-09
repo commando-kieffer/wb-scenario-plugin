@@ -8,7 +8,7 @@
 //! 5. Briefing, loadouts CK (avec la tenue de briefing), Game Mode Setup en Game Master (mission header : nom de l'opération,
 //!    scénaristes, description et images CK).
 //! 6. Calques Composants_Mission (systèmes), Base_Avancee (FOB) et Jour_1 à Jour_4, éléments CK, arsenaux et point de spawn
-//!    US "Base avancée" placés, intro au nom et au lieu de l'opération, faction US jouable, monde enregistré.
+//!    US "Base avancée" placés, intro au nom et au lieu de l'opération, factions US et USSR jouables, monde enregistré.
 //! Aucune classe CK n'est référencée par ce script : il compile sans les mods CK (avant l'ajout des dépendances).
 [WorkbenchPluginAttribute(name: "CK - Configuration Scénario", description: "Dépendances CK, monde, mode de jeu Game Master et éléments CK du scénario", wbModules: { "ResourceManager", "WorldEditor" }, awesomeFontCode: 0xF024)]
 class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
@@ -45,6 +45,14 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	//! Workbench started by RestartWorkbench() with -plugin=CK_ConfigurationScenarioPlugin: resume the configuration
 	override void RunCommandline()
 	{
+		//--- In the log of the restart: this line missing means Workbench opened another project
+		FileHandle log = FileIO.OpenFile(PROFILE_DIR + "/restart.log", FileMode.APPEND);
+		if (log)
+		{
+			log.WriteLine("Workbench rouvert, plugin lancé dans le projet : " + FindProjectFile());
+			log.Close();
+		}
+
 		RunAll(true);
 	}
 
@@ -92,9 +100,25 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			}
 		}
 
-		//--- Started from the command line without anything to resume: nothing to do
+		//--- Started from the command line without anything to resume: nothing to do. Restarted by the plugin but the
+		//--- project is not ready: say why instead of leaving an empty World Editor
 		if (fromCommandLine && !resumeOffered)
+		{
+			if (state.m_bPending)
+			{
+				string reason = GetNotLoadedDependencies(project);
+				if (!reason.IsEmpty())
+					reason = "Dépendances non chargées :\n" + reason;
+
+				string loadedId = GameProject.GetAddonID(project.GetGuid());
+				if (loadedId != project.GetValue("ID"))
+					reason += string.Format("ID du projet chargé : %1, ID du .gproj : %2\n", loadedId, project.GetValue("ID"));
+
+				Workbench.Dialog(TITLE, "La configuration ne peut pas reprendre après le redémarrage.\n" + reason + "\nCorrigez ce qui manque, puis relancez le plugin et cliquez sur Continuer.");
+			}
+
 			return;
+		}
 
 		//--- 1. Dependencies, 2. terrain, 3. operation
 		array<string> wanted = {};
@@ -858,10 +882,25 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	//! \return false when the restart could not be prepared (Workbench keeps running)
 	static bool RestartWorkbench(string gprojPath, string newFolderName, string pluginClass = "CK_ConfigurationScenarioPlugin")
 	{
+		string batchAbsPath = WriteRestartBatch(gprojPath, newFolderName, pluginClass);
+		if (batchAbsPath.IsEmpty())
+			return false;
+
+		Print(TITLE + ": redémarrage de Workbench (" + batchAbsPath + ")", LogLevel.NORMAL);
+		Workbench.RunCmd("cmd /c \"\"" + ToWindowsPath(batchAbsPath) + "\"\"", false);
+		Workbench.Exit(0);
+		return true;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Batch file of RestartWorkbench(), in the profile folder
+	//! \return its absolute path, empty on failure
+	static string WriteRestartBatch(string gprojPath, string newFolderName, string pluginClass)
+	{
 		string exePath;
 		Workbench.GetExecutableFilePath(exePath);
 		if (exePath.IsEmpty() || gprojPath.IsEmpty())
-			return false;
+			return string.Empty;
 
 		string gameDirectory = GetGameDirectory(exePath);
 		string oldDirectory = ToWindowsPath(GetDirectory(gprojPath));
@@ -873,13 +912,16 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		string gprojName = FilePath.StripPath(CleanPath(gprojPath));
 
 		string arguments = "-gproj \"%GPROJ%\"";
-		string addonsDirectories = GetAddonsDirectories(gameDirectory);
+		string addonsDirectories = GetAddonsDirectories(gameDirectory, gprojPath);
 		if (!addonsDirectories.IsEmpty())
 			arguments += string.Format(" -addonsDir \"%1\"", addonsDirectories);
 
+		string profileArgument;
 		string value;
 		if (System.GetCLIParam("profile", value) && !value.IsEmpty())
-			arguments += string.Format(" -profile \"%1\"", value);
+			profileArgument = string.Format(" -profile \"%1\"", value);
+
+		arguments += profileArgument;
 
 		if (!pluginClass.IsEmpty())
 			arguments += " -wbModule=WorldEditor -plugin=" + pluginClass;
@@ -889,13 +931,13 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		FileIO.MakeDirectory(PROFILE_DIR);
 		string profileDirectory;
 		if (!Workbench.GetAbsolutePath(PROFILE_DIR, profileDirectory, true))
-			return false;
+			return string.Empty;
 
 		string logPath = ToWindowsPath(CleanPath(profileDirectory) + "/restart.log");
 		string batchPath = PROFILE_DIR + "/restart.bat";
 		FileHandle file = FileIO.OpenFile(batchPath, FileMode.WRITE);
 		if (!file)
-			return false;
+			return string.Empty;
 
 		//--- Wait for Workbench to close, without time limit (it may ask to save first). CSV output: the table output of
 		//--- tasklist cuts image names at 25 characters ("ArmaReforgerWorkbenchStea"), the old wait never matched.
@@ -933,22 +975,37 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		file.WriteLine("if exist \"%OLD%\\%GPROJNAME%\" set \"GPROJ=%OLD%\\%GPROJNAME%\"");
 		file.WriteLine("if not defined GPROJ if exist \"%NEW%\\%GPROJNAME%\" set \"GPROJ=%NEW%\\%GPROJNAME%\"");
 		file.WriteLine("if not defined GPROJ echo ERREUR : %GPROJNAME% introuvable >> \"%LOG%\"");
+		file.WriteLine("if not defined GPROJ goto launcher");
 		file.WriteLine("echo projet ouvert : %GPROJ% >> \"%LOG%\"");
-		if (!gameDirectory.IsEmpty())
-			file.WriteLine("cd /d \"" + ToWindowsPath(gameDirectory) + "\"");
 
-		file.WriteLine("echo commande : \"" + ToWindowsPath(exePath) + "\" " + arguments + " >> \"%LOG%\"");
-		file.WriteLine("start \"\" \"" + ToWindowsPath(exePath) + "\" " + arguments);
+		//--- Without the game folder, Workbench started with -gproj opens an empty project:
+		//--- open the launcher instead, the renamed project is first in its list
+		if (gameDirectory.IsEmpty())
+		{
+			file.WriteLine("echo ERREUR : dossier d'Arma Reforger introuvable >> \"%LOG%\"");
+			file.WriteLine("goto launcher");
+		}
+		else
+		{
+			file.WriteLine("cd /d \"" + ToWindowsPath(gameDirectory) + "\"");
+			file.WriteLine("echo dossier du jeu : %CD% >> \"%LOG%\"");
+			file.WriteLine("echo commande : \"" + ToWindowsPath(exePath) + "\" " + arguments + " >> \"%LOG%\"");
+			file.WriteLine("start \"\" \"" + ToWindowsPath(exePath) + "\" " + arguments);
+			file.WriteLine("goto end");
+		}
+
+		file.WriteLine(":launcher");
+		file.WriteLine("echo ouverture du lanceur de Workbench >> \"%LOG%\"");
+		file.WriteLine("cd /d \"" + ToWindowsPath(GetDirectory(exePath)) + "\"");
+		file.WriteLine("start \"\" \"" + ToWindowsPath(exePath) + "\"" + profileArgument);
+		file.WriteLine(":end");
 		file.Close();
 
 		string batchAbsPath;
 		if (!Workbench.GetAbsolutePath(batchPath, batchAbsPath, true))
-			return false;
+			return string.Empty;
 
-		Print(TITLE + ": redémarrage de Workbench (" + batchAbsPath + ")", LogLevel.NORMAL);
-		Workbench.RunCmd("cmd /c \"\"" + ToWindowsPath(batchAbsPath) + "\"\"", false);
-		Workbench.Exit(0);
-		return true;
+		return batchAbsPath;
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -991,15 +1048,66 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! Folders of every loaded addon (and of the game addons), comma separated, for -addonsDir:
-	//! a project opened with -gproj only sees the default folders, the launcher list is not used.
-	static string GetAddonsDirectories(string gameDirectory)
+	//! Folders for -addonsDir, comma separated. A project opened with -gproj only sees these folders (the launcher list
+	//! is not used): a dependency missing from them makes Workbench open the ArmaReforger project instead.
+	//! Workbench takes the first mod found for a GUID and puts its default projects folder ("My Games/ArmaReforgerWorkbench/addons")
+	//! after the folders given here. So projects are given one folder each, before the Workshop downloads
+	//! ("My Games/ArmaReforger/addons", packed mods): a mod both in a project and downloaded comes from the project, as in the launcher.
+	//! \param gprojPath project reopened by the restart (given by -gproj, its own folder is not added)
+	static string GetAddonsDirectories(string gameDirectory, string gprojPath = string.Empty)
 	{
 		array<string> directories = {};
 		if (!gameDirectory.IsEmpty())
-			directories.Insert(ToWindowsPath(gameDirectory + "/addons"));
+			AddDirectory(directories, gameDirectory + "/addons");
 
-		//--- Default Workbench addons folder (Workshop downloads): next to the profile folder
+		CK_ConfigurationScenarioProjectFile project = new CK_ConfigurationScenarioProjectFile();
+		array<string> needed = {};
+		if (!gprojPath.IsEmpty() && project.Load(gprojPath))
+			project.GetDependencies(needed);
+
+		//--- Loaded projects (a packed mod has no folder readable from script)
+		array<string> loaded = {};
+		array<string> found = {};
+		GameProject.GetLoadedAddons(loaded);
+		foreach (string guid : loaded)
+		{
+			if (guid == project.GetGuid() || GameProject.IsVanillaAddon(guid))
+				continue;
+
+			string root;
+			if (Workbench.GetAbsolutePath(SCR_AddonTool.ToFileSystem(GameProject.GetAddonID(guid)), root, true))
+			{
+				AddDirectory(directories, root);
+				found.Insert(guid);
+			}
+		}
+
+		//--- Other dependencies (not loaded yet, or packed): project of the launcher list with that GUID, then its own dependencies
+		array<string> listedFiles = {};
+		array<string> listedGuids = {};
+		GetListedProjects(listedFiles, listedGuids);
+		for (int n = 0; n < needed.Count(); n++)
+		{
+			int listedIndex = listedGuids.Find(needed[n]);
+			if (found.Contains(needed[n]) || listedIndex < 0 || needed[n] == project.GetGuid())
+				continue;
+
+			found.Insert(needed[n]);
+
+			AddDirectory(directories, GetDirectory(listedFiles[listedIndex]));
+			CK_ConfigurationScenarioProjectFile dependency = new CK_ConfigurationScenarioProjectFile();
+			array<string> dependencyGuids = {};
+			if (dependency.Load(listedFiles[listedIndex]))
+				dependency.GetDependencies(dependencyGuids);
+
+			foreach (string dependencyGuid : dependencyGuids)
+			{
+				if (!needed.Contains(dependencyGuid))
+					needed.Insert(dependencyGuid);
+			}
+		}
+
+		//--- Default projects folder, then Workshop downloads: next to the profile folder ("My Games/ArmaReforgerWorkbench/profile")
 		string profile;
 		if (Workbench.GetAbsolutePath("$profile:", profile, true))
 		{
@@ -1007,44 +1115,87 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			if (profile.EndsWith("/"))
 				profile = profile.Substring(0, profile.Length() - 1);
 
-			string workbenchAddons = profile.Substring(0, profile.Length() - FilePath.StripPath(profile).Length()) + "addons";
-			if (FileIO.FileExists(workbenchAddons))
-				directories.Insert(ToWindowsPath(workbenchAddons));
-		}
+			string workbenchDirectory = GetDirectory(profile);
+			AddDirectory(directories, workbenchDirectory + "addons");
 
-		array<string> loaded = {};
-		GameProject.GetLoadedAddons(loaded);
-		foreach (string guid : loaded)
-		{
-			if (GameProject.IsVanillaAddon(guid))
-				continue;
-
-			string root;
-			if (!Workbench.GetAbsolutePath(SCR_AddonTool.ToFileSystem(GameProject.GetAddonID(guid)), root, true))
-				continue;
-
-			root = CleanPath(root);
-			if (root.EndsWith("/"))
-				root = root.Substring(0, root.Length() - 1);
-
-			string parent = ToWindowsPath(root.Substring(0, root.Length() - FilePath.StripPath(root).Length()));
-			if (parent.EndsWith("\\"))
-				parent = parent.Substring(0, parent.Length() - 1);
-
-			if (!parent.IsEmpty() && !directories.Contains(parent))
-				directories.Insert(parent);
+			workbenchDirectory = workbenchDirectory.Substring(0, workbenchDirectory.Length() - 1);
+			AddDirectory(directories, GetDirectory(workbenchDirectory) + "ArmaReforger/addons");
 		}
 
 		string result;
-		foreach (int i, string directory : directories)
+		foreach (int d, string directory : directories)
 		{
-			if (i > 0)
+			if (d > 0)
 				result += ",";
 
 			result += directory;
 		}
 
 		return result;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Add an existing folder once (Windows path, no trailing separator)
+	static void AddDirectory(notnull array<string> directories, string path)
+	{
+		path = ToWindowsPath(CleanPath(path));
+		while (path.EndsWith("\\"))
+		{
+			path = path.Substring(0, path.Length() - 1);
+		}
+
+		if (path.IsEmpty() || !FileIO.FileExists(path))
+			return;
+
+		string lowerPath = path;
+		lowerPath.ToLower();
+		foreach (string directory : directories)
+		{
+			string lowerDirectory = directory;
+			lowerDirectory.ToLower();
+			if (lowerDirectory == lowerPath)
+				return;
+		}
+
+		directories.Insert(path);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! .gproj files of the launcher project lists that exist, with their GUID
+	static void GetListedProjects(notnull array<string> files, notnull array<string> guids)
+	{
+		array<string> listFiles = SCR_FileIOHelper.FindFiles("$profile:", ".conf");
+		foreach (string listFile : listFiles)
+		{
+			if (!FilePath.StripPath(listFile).Contains(".projectList_"))
+				continue;
+
+			FileHandle input = FileIO.OpenFile(listFile, FileMode.READ);
+			if (!input)
+				continue;
+
+			string line;
+			while (input.ReadLine(line) >= 0)
+			{
+				int length = line.Length();
+				if (length > 0 && line.ToAscii(length - 1) == 13)
+					line = line.Substring(0, length - 1);
+
+				line = line.Trim();
+				if (!line.StartsWith("FilePath \"") || !line.EndsWith("\""))
+					continue;
+
+				string entry = line.Substring(10, line.Length() - 11);
+				CK_ConfigurationScenarioProjectFile listed = new CK_ConfigurationScenarioProjectFile();
+				if (files.Contains(entry) || !FileIO.FileExists(entry) || !listed.Load(entry) || listed.GetGuid().IsEmpty())
+					continue;
+
+				files.Insert(entry);
+				guids.Insert(listed.GetGuid());
+			}
+
+			input.Close();
+		}
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -2020,16 +2171,19 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		string listFailed;
 		PlaceAndConfigure(api, briefing, loadouts, state.m_sOperation, state.GetLocation(), listPlaced, listPresent, listMissing, listFailed);
 
-		//--- The faction can only be made playable in a game mode of the scenario itself: a sub-scene cannot save changes
+		//--- The factions can only be made playable in a game mode of the scenario itself: a sub-scene cannot save changes
 		//--- to an entity of its parent world (game mode of GM_Eden, GM_Arland...)
 		IEntitySource gameMode = FindWorldGameMode();
-		bool factionPlayable = FindGameMode() && SetFactionPlayable(api, FACTION_KEY);
+		array<string> notPlayable = SetFactionsPlayable(api);
+		string factionsText = JoinFactions(GetPlayableFactions());
 		if (!gameMode)
-			notes += "Aucun mode de jeu dans le monde : ajoutez-en un, puis rendez la faction " + FACTION_KEY + " jouable.\n";
+			notes += "Aucun mode de jeu dans le monde : ajoutez-en un, puis rendez les factions " + factionsText + " jouables.\n";
 		else if (!FindGameMode())
-			notes += string.Format("Le mode de jeu vient du terrain (%1) : le scénario ne peut pas le modifier, la faction %2 n'est pas jouable au départ. Le Game Master la rend jouable en jeu.\n", gameMode.GetName(), FACTION_KEY);
-		else if (!factionPlayable)
-			notes += string.Format("Faction %1 non jouable dans le mode de jeu %2 : cochez « Is Playable » dans son gestionnaire de factions.\n", FACTION_KEY, gameMode.GetName());
+			notes += string.Format("Le mode de jeu vient du terrain (%1) : le scénario ne peut pas le modifier, les factions %2 ne sont pas jouables au départ. Le Game Master les rend jouables en jeu.\n", gameMode.GetName(), factionsText);
+		else if (notPlayable.Count() == 1)
+			notes += string.Format("Faction %1 non jouable dans le mode de jeu %2 : cochez « Is Playable » dans son gestionnaire de factions.\n", notPlayable[0], gameMode.GetName());
+		else if (notPlayable.Count() > 1)
+			notes += string.Format("Factions %1 non jouables dans le mode de jeu %2 : cochez « Is Playable » dans son gestionnaire de factions.\n", JoinFactions(notPlayable), gameMode.GetName());
 
 		bool saved = worldEditor.Save();
 		state.m_bPending = false;
@@ -2062,10 +2216,9 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 
 		result += " - troops : entité CK_Troops du monde (CK Core n'a pas de .conf pour les troops)\n";
 		result += " - intro (titre, lieu, image) : entité CK_MissionIntro du monde\n";
-		if (factionPlayable)
-			result += string.Format(" - point de spawn : entité SpawnPoint_BaseAvancee (faction %1 jouable)\n", FACTION_KEY);
-		else
-			result += " - point de spawn : entité SpawnPoint_BaseAvancee\n";
+		result += string.Format(" - point de spawn : entité SpawnPoint_BaseAvancee (faction %1)\n", FACTION_KEY);
+		if (FindGameMode() && notPlayable.IsEmpty())
+			result += string.Format(" - factions jouables : %1 (spawn et tenue de briefing pour %2 uniquement)\n", factionsText, FACTION_KEY);
 
 		if (!saved)
 			result += "\nLe monde n'a pas pu être enregistré : enregistrez-le (Ctrl+S).\n";
@@ -2148,8 +2301,8 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			api.SetVariableValue(intro, { ContainerIdPathEntry("CK_MissionIntroComponent") }, "m_sLocation", location);
 		}
 
-		//--- Players can spawn without the Game Master making the faction playable
-		SetFactionPlayable(api, FACTION_KEY);
+		//--- Players can spawn without the Game Master making the factions playable
+		SetFactionsPlayable(api);
 
 		if (manageEditAction)
 			api.EndEntityAction(TITLE);
@@ -2181,14 +2334,42 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! The Game Master faction manager (child of GameMode_Editor_Full) has every faction non-playable:
-	//! make this one playable so that players deploy on the spawn point at mission start
-	//! \return true when the faction is playable
-	static bool SetFactionPlayable(notnull WorldEditorAPI api, string factionKey)
+	//! Factions playable at mission start, the same as the vanilla FactionManager_USxUSSR
+	static array<string> GetPlayableFactions()
 	{
+		array<string> factions = { "US", "USSR" };
+		return factions;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "US et USSR"
+	static string JoinFactions(notnull array<string> factions)
+	{
+		string result;
+		for (int i = 0, count = factions.Count(); i < count; i++)
+		{
+			if (i > 0 && i == count - 1)
+				result += " et ";
+			else if (i > 0)
+				result += ", ";
+
+			result += factions[i];
+		}
+
+		return result;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! The Game Master faction manager (child of GameMode_Editor_Full) has every faction non-playable:
+	//! make US and USSR playable in it, as FactionManager_USxUSSR does. That prefab is not added: a second
+	//! faction manager would conflict with the Game Master one, which also keeps FIA and CIV for the Game Master.
+	//! \return factions not made playable (all of them when the scenario has no game mode of its own)
+	static array<string> SetFactionsPlayable(notnull WorldEditorAPI api)
+	{
+		array<string> missing = GetPlayableFactions();
 		IEntitySource gameMode = FindGameMode();
 		if (!gameMode)
-			return false;
+			return missing;
 
 		for (int i = 0, count = gameMode.GetNumChildren(); i < count; i++)
 		{
@@ -2198,27 +2379,29 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 				continue;
 
 			BaseContainerList factions = child.GetObjectArray("Factions");
-			if (!factions)
-				continue;
-
-			for (int j = 0, factionCount = factions.Count(); j < factionCount; j++)
+			for (int j = 0; factions && j < factions.Count(); j++)
 			{
 				BaseContainer faction = factions.Get(j);
 				string key;
 				faction.Get("FactionKey", key);
-				if (key != factionKey)
+				int index = missing.Find(key);
+				if (index < 0)
 					continue;
 
 				bool playable;
 				faction.Get("m_bIsPlayable", playable);
-				if (playable)
-					return true;
+				if (!playable)
+				{
+					playable = api.SetVariableValue(child, { ContainerIdPathEntry("Factions", j) }, "m_bIsPlayable", "1");
+					factions = child.GetObjectArray("Factions");
+				}
 
-				return api.SetVariableValue(child, { ContainerIdPathEntry("Factions", j) }, "m_bIsPlayable", "1");
+				if (playable)
+					missing.RemoveOrdered(index);
 			}
 		}
 
-		return false;
+		return missing;
 	}
 
 	//------------------------------------------------------------------------------------------------
