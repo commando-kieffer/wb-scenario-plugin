@@ -5,7 +5,7 @@
 //! 3. Mod renommé CK_Op_<année>_<mois>_<jour> (mois et jour sur 2 chiffres : dossier, TITLE, ID), puis redémarrage de Workbench si besoin
 //!    (dossier renommé et plugin relancé par un .bat, voir RestartWorkbench).
 //! 4. Sous-scène Worlds/<mod>/<mod>.ent créée dans le mod et ouverte.
-//! 5. Briefing, loadouts CK (avec la tenue de briefing), Game Mode Setup en Game Master (mission header : nom de l'opération,
+//! 5. Briefing, loadouts CK (tenue place d'armes et paquetage recrue), Game Mode Setup en Game Master (mission header : nom de l'opération,
 //!    scénaristes, description et images CK).
 //! 6. Calques Composants_Mission (systèmes), Base_Avancee (FOB) et Jour_1 à Jour_4, éléments CK, arsenaux et point de spawn
 //!    US "Base avancée" placés, intro au nom et au lieu de l'opération, factions US et USSR jouables, monde enregistré.
@@ -25,7 +25,10 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	static const string LAYER_BASE = "Base_Avancee";
 	static const string LAYER_DAY = "Jour_";
 	static const int DAY_COUNT = 4;
-	static const string BRIEFING_OUTFIT_NAME = "Tenue de briefing";
+	static const string DEFAULT_LOADOUT_PLACE_DARMES = "Tenue place d'armes";
+	static const string DEFAULT_LOADOUT_RECRUE = "Paquetage recrue";
+	static const string OLD_OUTFIT_NAME = "Tenue de briefing";			//!< default loadout of the previous versions (replaced)
+	static const string OLD_OUTFIT_PREFAB_SUFFIX = "_TenueBriefing.et";
 	static const string MISSION_INTRO_PREFAB = "{1C31E7D9936A78A5}Prefabs/CK/CK_MissionIntro.et";
 
 	//--- Mission header: description and pictures. Icon: CK Core logo (= thumbnail.png of the CK mods). Loading screen
@@ -1259,9 +1262,8 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		//--- CK configs of the mod
 		ResourceName briefing = CreateBriefingConfig(fileSystem, modName, state);
 		ResourceName loadouts = CreateLoadoutsConfig(fileSystem, modName);
-		ResourceName outfit = CreateBriefingOutfitPrefab(fileSystem, modName);
-		if (!AddBriefingOutfitLoadout(loadouts, outfit))
-			notes += string.Format("La tenue de briefing n'a pas pu être ajoutée aux loadouts (%1).\n", GetBriefingOutfitPath(modName));
+		if (!AddDefaultLoadouts(loadouts))
+			notes += string.Format("Les loadouts par défaut n'ont pas pu être ajoutés (%1).\n", GetLoadoutsPath(modName));
 
 		//--- Game Mode Setup, forced on Game Master, mission header named after the operation
 		if (!HasHeaderTextures(fileSystem))
@@ -1635,7 +1637,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! CK_MissionLoadoutList (CK Core) of the operation, empty: the scenario maker adds the loadouts
+	//! CK_MissionLoadoutList (CK Core) of the operation, created empty (the default loadouts are added by AddDefaultLoadouts)
 	static ResourceName CreateLoadoutsConfig(string fileSystem, string modName)
 	{
 		ResourceName existing = GetExistingConfig(fileSystem, GetLoadoutsPath(modName));
@@ -1650,144 +1652,153 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 	}
 
 	//------------------------------------------------------------------------------------------------
-	static string GetBriefingOutfitPath(string modName)
+	//! Default loadouts of the CK menu, exported from the CK menu (Arsenal > Export). Their items come from CK Equipment,
+	//! CK Weapons, GRS and RHS Status Quo: these mods are not dependencies of the scenario, the items of a mod that is
+	//! not loaded are just missing from the loadout.
+	static void GetDefaultLoadouts(notnull array<ref CK_ConfigurationScenarioLoadout> loadouts)
 	{
-		return "Prefabs/CK/" + modName + "_TenueBriefing.et";
+		loadouts.Clear();
+		loadouts.Insert(new CK_ConfigurationScenarioLoadout(DEFAULT_LOADOUT_PLACE_DARMES, "Treillis BME, Glock 17 (3 chargeurs), radio, SICS, télémètre Vector", GetPlaceDarmesCode()));
+		loadouts.Insert(new CK_ConfigurationScenarioLoadout(DEFAULT_LOADOUT_RECRUE, "FAMAS (8 chargeurs), Glock 17, gilet AVS, casque Ops-Core, radio, SICS", GetRecrueCode()));
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! Character of the briefing outfit (US soldier, its equipment is the loadout): BME uniform, army boots, no helmet,
-	//! CK Glock 17 (a magazine in the weapon, 2 in the pants), SICS in the pants, watch. Kept as is when it exists.
-	//! The BME uniform (French Uniform), CK_Weapons and CK_Equipment are not dependencies of the scenario: the items
-	//! of a mod that is not loaded are just missing from the loadout.
-	static ResourceName CreateBriefingOutfitPrefab(string fileSystem, string modName)
+	//! "Place d'armes" (the code is cut in parts: shorter lines)
+	static string GetPlaceDarmesCode()
 	{
-		string path = fileSystem + GetBriefingOutfitPath(modName);
-		string absolutePath;
-		if (fileSystem.IsEmpty() || !Workbench.GetAbsolutePath(path, absolutePath, false))
-			return ResourceName.Empty;
-
-		absolutePath = CleanPath(absolutePath);
-		if (!FileIO.FileExists(absolutePath))
-		{
-			FileIO.MakeDirectory(GetDirectory(absolutePath));
-			FileHandle file = FileIO.OpenFile(absolutePath, FileMode.WRITE);
-			if (!file)
-				return ResourceName.Empty;
-
-			string pants = "{2461A685FE48E405}Prefabs/Characters/Uniforms/Pants_VKPO_BME.et";
-			string magazine = "\"{3C9D22848B84856E}Prefabs/Weapons/Handguns/CK_Glock17/CK_Magazine_9x19_Glock17_17rnd.et\"";
-			file.WriteLine("SCR_ChimeraCharacter : \"{836E7E39AAC5888B}Prefabs/Characters/Factions/BLUFOR/US_Army/Character_US_Base.et\" {");
-			file.WriteLine(" ID \"520EC961A090BBD5\"");
-			file.WriteLine(" components {");
-			file.WriteLine("  SCR_CharacterInventoryStorageComponent \"{520EA1D2DB118DAC}\" {");
-			file.WriteLine("   components {");
-			file.WriteLine("    SCR_EquipmentStorageComponent \"{56B49DA9722B635D}\" {");
-			file.WriteLine("     InitialStorageSlots {");
-			file.WriteLine("      SCR_EquipmentStorageSlot WristwatchSlot {");
-			file.WriteLine("       Prefab \"{78ED4FEF62BBA728}Prefabs/Items/Equipment/Watches/Watch_SandY184A.et\"");
-			file.WriteLine("      }");
-			file.WriteLine("     }");
-			file.WriteLine("    }");
-			file.WriteLine("   }");
-			file.WriteLine("  }");
-			file.WriteLine("  CharacterWeaponSlotComponent \"{520EA1D2F659CFDC}\" {");
-			file.WriteLine("   WeaponTemplate \"{C81DBB62917BCE20}Prefabs/Weapons/Handguns/CK_Glock17/CK_Glock17.et\"");
-			file.WriteLine("  }");
-			file.WriteLine("  BaseLoadoutManagerComponent \"{520EA1D2DB11821E}\" {");
-			file.WriteLine("   Slots {");
-			file.WriteLine("    LoadoutSlotInfo Hat {");
-			file.WriteLine("     Prefab \"\"");
-			file.WriteLine("    }");
-			file.WriteLine("    LoadoutSlotInfo Jacket {");
-			file.WriteLine("     Prefab \"{F60E4C4476E8130F}Prefabs/Characters/Uniforms/VKPO/F3_BME.et\"");
-			file.WriteLine("    }");
-			file.WriteLine("    LoadoutSlotInfo Pants {");
-			file.WriteLine("     Prefab \"" + pants + "\"");
-			file.WriteLine("    }");
-			file.WriteLine("    SCR_FeetLoadoutSlotInfo Boots {");
-			file.WriteLine("     Prefab \"{DAAFD15478BDE1C3}Prefabs/Characters/Footwear/CombatBoots_US_01.et\"");
-			file.WriteLine("    }");
-			file.WriteLine("   }");
-			file.WriteLine("  }");
-			file.WriteLine("  SCR_InventoryStorageManagerComponent \"{520EA1D2DB118DE5}\" {");
-			file.WriteLine("   InitialInventoryItems {");
-			file.WriteLine("    ItemsInitConfigurationItem \"{6CB1E0A0B1E0A001}\" {");
-			file.WriteLine("     TargetStorage \"Pants/" + FilePath.StripPath(pants) + "\"");
-			file.WriteLine("     PrefabsToSpawn {");
-			file.WriteLine("      " + magazine + " " + magazine + " \"{85427A0E24357BE6}Prefabs/Items/Equipment/CK_SICS/CK_SICS.et\"");
-			file.WriteLine("     }");
-			file.WriteLine("    }");
-			file.WriteLine("   }");
-			file.WriteLine("  }");
-			file.WriteLine(" }");
-			file.WriteLine("}");
-			file.Close();
-
-			ResourceManager resourceManager = Workbench.GetModule(ResourceManager);
-			resourceManager.RegisterResourceFile(absolutePath, false);
-			Print(TITLE + ": tenue de briefing créée : " + absolutePath, LogLevel.NORMAL);
-		}
-
-		return GetResourceNameFromFile(absolutePath, path);
+		string code = "CKL1:{%22version%22:1,%22name%22:%22Place d'armes%22,%22scenario%22:%22Base Entraînement%22,%22date%22:%2211/11/2026 01:16%22,%22faction%22:%22US%22,%22data%22:%22{%5C%22faction%5C%22:%5C%22US%5C%22,%5C%22arsenalLoadout%5C%22:{%5C%22prefab%5C%22:%5C%2226A9756790131354%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22EquipedWeaponStorageComponent:520EA1D2DB118C70%5C%22,%5C%22slots%5C%22:{}},{%5C%22id%5C%22:%5C%22SCR_EquipmentStorageComponent:56B49DA9722B635D%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%2203810BEF182ADA0B%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%2278ED4FEF62BBA728%5C%22}}},{%5C%22id%5C%22:%5C%22SCR_CharacterInventoryStorageComponent:520EA1D2DB118DAC%5C%22,%5C%22slots%5C%22:{%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%223BA4B7BE6538D6E6%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22ClothNodeStorageComponent:5222CB01D5B9A306%5C%22,%5C%22slots%5C%22:{%5C%";
+		code += "224%5C%22:{%5C%22prefab%5C%22:%5C%22D5982F3150A75A97%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:658A2C52FF987D55%5C%22,%5C%22slots%5C%22:{}}]},%5C%225%5C%22:{%5C%22prefab%5C%22:%5C%222518FCA33DD1BEA6%5C%22}}}]},%5C%223%5C%22:{%5C%22prefab%5C%22:%5C%224221022703A2852D%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:5222CB01D5B9A306%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%2285427A0E24357BE6%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%2261D4F80E49BF9B12%5C%22}}}]},%5C%224%5C%22:{%5C%22prefab%5C%22:%5C%2298388F9E1E801A42%5C%22},%5C%229%5C%22:{%5C%22prefab%5C%22:%5C%227EDD40FF83EDA44F%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22ClothNodeStorageComponent:65CD429CD4A3549B%5C%22,%5C%22slots%5C%22:{%5C%224%5C%22:{%5C%22prefab%5C%22:%5C%2228480419FE4C4063%5C%22,%5C%22storages%5C%22:";
+		code += "[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:65CD429B184CE5AA%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22C81DBB62917BCE20%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_WeaponAttachmentsStorageComponent:51F080D5CE45A1A2%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%223C9D22848B84856E%5C%22}}}]}}}]},%5C%225%5C%22:{%5C%22prefab%5C%22:%5C%227591612DB8B27A5D%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:65E71517FCDC40DB%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%223C9D22848B84856E%5C%22}}}]},%5C%226%5C%22:{%5C%22prefab%5C%22:%5C%227591612DB8B27A5D%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:65E71517FCDC40DB%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%223C9D22848B84856E%5C%22}}}]},%5C%2211%5C%22:{%5C%22prefab%5C%22:%5C%22F0DBA15DD3C";
+		code += "EE5A6%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_PouchStorageComponent:697CF62538A99DF1%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22D69684663E89D6EA%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22},%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%22D70216B1B2889129%5C%22},%5C%223%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22}}}]},%5C%2212%5C%22:{%5C%22prefab%5C%22:%5C%22EFF9BF2AFF9E4856%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:65CC0BEE0F3A796A%5C%22,%5C%22slots%5C%22:{}}]}}}]},%5C%2213%5C%22:{%5C%22prefab%5C%22:%5C%229A0B49CB579AFBEF%5C%22}}}],%5C%22loadoutLabels%5C%22:[122,46,70,2,11]}}%22}";
+		return code;
 	}
 
 	//------------------------------------------------------------------------------------------------
-	//! "Tenue de briefing" first in the loadouts of the operation (CK_MissionLoadoutList), when no loadout has that name
-	//! \return true when the loadout is in the list
-	static bool AddBriefingOutfitLoadout(ResourceName loadouts, ResourceName outfit)
+	//! "Recrue"
+	static string GetRecrueCode()
 	{
-		if (loadouts.IsEmpty() || outfit.IsEmpty())
+		string code = "CKL1:{%22version%22:1,%22name%22:%22Recrue%22,%22scenario%22:%22Base Entraînement%22,%22date%22:%2211/11/2026 01:17%22,%22faction%22:%22US%22,%22data%22:%22{%5C%22faction%5C%22:%5C%22US%5C%22,%5C%22arsenalLoadout%5C%22:{%5C%22prefab%5C%22:%5C%2226A9756790131354%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22EquipedWeaponStorageComponent:520EA1D2DB118C70%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%2274F848077D67904A%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_WeaponAttachmentsStorageComponent:51F080D5CE45A1A2%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%2208286DDBB1F33FF1%5C%22},%5C%224%5C%22:{%5C%22prefab%5C%22:%5C%22E52C9791E1554A5F%5C%22}}}]}}},{%5C%22id%5C%22:%5C%22SCR_EquipmentStorageComponent:56B49DA9722B635D%5C%22,%5C%22slots%5C%22:{%5C%221%5C%22:{%5C%22prefab%5C%22:%5C";
+		code += "%2278ED4FEF62BBA728%5C%22}}},{%5C%22id%5C%22:%5C%22SCR_CharacterInventoryStorageComponent:520EA1D2DB118DAC%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%226AC0597EBA417C43%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22RHS_HelmetNodeStorageComponent:5DB13C5777E6E695%5C%22,%5C%22slots%5C%22:{%5C%225%5C%22:{%5C%22prefab%5C%22:%5C%222162B5F1B9F5F6BB%5C%22}}}]},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%223BA4B7BE6538D6E6%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22ClothNodeStorageComponent:5222CB01D5B9A306%5C%22,%5C%22slots%5C%22:{%5C%224%5C%22:{%5C%22prefab%5C%22:%5C%22D5982F3150A75A97%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:658A2C52FF987D55%5C%22,%5C%22slots%5C%22:{}}]}}}]},%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%22CF8699074C8FAE04%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_ArmorVestStorageComponent:697F5ADB5D0";
+		code += "D37AA%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%2212630DE6380559FE%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%2258BE0FBCD10DB165%5C%22},%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%22C861D87A7F00D896%5C%22},%5C%223%5C%22:{%5C%22prefab%5C%22:%5C%227721B26F70C1BCDE%5C%22},%5C%224%5C%22:{%5C%22prefab%5C%22:%5C%221A7333876077FCF0%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:697CF622FFAE70CE%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22},%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22}}}]},%5C%229%5C%22:{%5C%22prefab%5C%22:%5C%222518FCA33DD1BEA6%5C%22},%5C%2213%5C%22:{%5C%22prefab%5C%22:%5C%22A243C5E2B58E4AA0%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:697E4650FD44EE2A%5C%22,%5C%";
+		code += "22slots%5C%22:{}}]},%5C%2214%5C%22:{%5C%22prefab%5C%22:%5C%22140F46DF06586070%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:6A3A0176D88DF248%5C%22,%5C%22slots%5C%22:{%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%229DB69176CEF0EE97%5C%22}}}]},%5C%2219%5C%22:{%5C%22prefab%5C%22:%5C%229FF96CE108DDA22B%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:697CF639B780F502%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22}}}]},%5C%2220%5C%22:{%5C%22prefab%5C%22:%5C%229FF96CE108DDA22B%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:697CF639B780F502%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22}}}]},%5C%2242";
+		code += "%5C%22:{%5C%22prefab%5C%22:%5C%22968A2E9871419162%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:697F3B6A10BD9A49%5C%22,%5C%22slots%5C%22:{}}]}}}]},%5C%223%5C%22:{%5C%22prefab%5C%22:%5C%224221022703A2852D%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:5222CB01D5B9A306%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22D69684663E89D6EA%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%2261D4F80E49BF9B12%5C%22},%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%2285427A0E24357BE6%5C%22},%5C%223%5C%22:{%5C%22prefab%5C%22:%5C%226E35D94130954509%5C%22}}}]},%5C%224%5C%22:{%5C%22prefab%5C%22:%5C%2298388F9E1E801A42%5C%22},%5C%229%5C%22:{%5C%22prefab%5C%22:%5C%227EDD40FF83EDA44F%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22ClothNodeStorageComponent:65CD429CD4A3549B%5C%22,%5C%22slots%5C%22:{%5C%224%5C%22:{%5C%22pr";
+		code += "efab%5C%22:%5C%2228480419FE4C4063%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:65CD429B184CE5AA%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22C81DBB62917BCE20%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_WeaponAttachmentsStorageComponent:51F080D5CE45A1A2%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%223C9D22848B84856E%5C%22}}}]}}}]},%5C%225%5C%22:{%5C%22prefab%5C%22:%5C%227591612DB8B27A5D%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:65E71517FCDC40DB%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%223C9D22848B84856E%5C%22}}}]},%5C%226%5C%22:{%5C%22prefab%5C%22:%5C%227591612DB8B27A5D%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:65E71517FCDC40DB%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%223C9D22848B84856E%5C";
+		code += "%22}}}]},%5C%2211%5C%22:{%5C%22prefab%5C%22:%5C%22F0DBA15DD3CEE5A6%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_PouchStorageComponent:697CF62538A99DF1%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22},%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%22D70216B1B2889129%5C%22}}}]},%5C%2212%5C%22:{%5C%22prefab%5C%22:%5C%22240ADA340097707B%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_EquipmentStorageComponent:697414F4E6769F13%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22C9A4E563205BAC75%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:65CC0BEE0F3F0545%5C%22,%5C%22slots%5C%22:{}}]}}},{%5C%22id%5C%22:%5C%22GRS_PouchStorageComponent:6970D6BE302BB3D9%5C%22,%5C%22slots%5C%22:{}}]}}}]},%5C%2213%5C%22:{%5C%22prefab%5C%22:%5C%22D38F";
+		code += "6F82BF7F83B8%5C%22}}}],%5C%22loadoutLabels%5C%22:[122,46,70,2,11],%5C%22activeWeaponIdx%5C%22:0}}%22}";
+		return code;
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Default loadouts first in the loadouts of the operation (CK_MissionLoadoutList), each one when no loadout has its name.
+	//! The "Tenue de briefing" of the previous versions becomes the first default loadout (same place in the list; its prefab
+	//! file stays in the mod). The loaded config is changed in place: Workbench keeps it in memory, a new container saved
+	//! to the file would leave the old loadouts in Workbench until it restarts. No BaseContainerList.Remove: it moves the
+	//! last loadout in place of the removed one.
+	//! \return true when the default loadouts are in the list
+	static bool AddDefaultLoadouts(ResourceName loadouts)
+	{
+		if (loadouts.IsEmpty())
 			return false;
 
 		Resource listResource = BaseContainerTools.LoadContainer(loadouts);
 		if (!listResource || !listResource.IsValid())
 			return false;
 
+		array<ref CK_ConfigurationScenarioLoadout> defaults = {};
+		GetDefaultLoadouts(defaults);
+
 		BaseContainer list = listResource.GetResource().ToBaseContainer();
-		array<BaseContainer> existing = {};
 		BaseContainerList current = list.GetObjectArray("m_aLoadouts");
-		for (int i = 0; current && i < current.Count(); i++)
-		{
-			BaseContainer existingLoadout = current.Get(i);
-			string name;
-			existingLoadout.Get("m_sName", name);
-			if (name == BRIEFING_OUTFIT_NAME)
-				return true;
-
-			existing.Insert(existingLoadout);
-		}
-
-		Resource loadoutResource = BaseContainerTools.CreateContainer("CK_MissionLoadout");
-		if (!loadoutResource || !loadoutResource.IsValid())
-			return false;
-
-		BaseContainer loadout = loadoutResource.GetResource().ToBaseContainer();
-		loadout.Set("m_sName", BRIEFING_OUTFIT_NAME);
-		loadout.Set("m_sDescription", "Treillis BME, Glock 17 (3 chargeurs), SICS, montre");
-		loadout.Set("m_sCharacterPrefab", outfit);
-		array<string> factionKeys = { FACTION_KEY };
-		loadout.Set("m_aFactionKeys", factionKeys);
-
-		//--- First of the list, the loadouts already there after it
 		BaseContainerList loadoutList = list.SetObjectArray("m_aLoadouts");
 		if (!loadoutList)
 			return false;
 
-		if (loadoutList.Count() == 0 && !existing.IsEmpty())
+		bool changed;
+
+		//--- Loadouts inherited from a parent config: copied into the new list
+		if (loadoutList.Count() == 0 && current && current.Count() > 0)
 		{
-			loadoutList.Insert(loadout);
-			foreach (BaseContainer kept : existing)
+			for (int i = 0, count = current.Count(); i < count; i++)
 			{
-				loadoutList.Insert(kept);
+				loadoutList.Insert(current.Get(i));
 			}
-		}
-		else
-		{
-			loadoutList.Insert(loadout, 0);
+
+			changed = true;
 		}
 
+		array<string> names = {};
+		int oldOutfit = -1;
+		for (int j = 0, listCount = loadoutList.Count(); j < listCount; j++)
+		{
+			string name;
+			loadoutList.Get(j).Get("m_sName", name);
+			names.Insert(name);
+			if (oldOutfit < 0 && IsOldOutfitLoadout(loadoutList.Get(j)))
+				oldOutfit = j;
+		}
+
+		array<string> factionKeys = { FACTION_KEY };
+		if (oldOutfit >= 0 && !names.Contains(defaults[0].m_sName))
+		{
+			BaseContainer outfit = loadoutList.Get(oldOutfit);
+			SetDefaultLoadout(outfit, defaults[0], factionKeys);
+			outfit.ClearVariable("m_sCharacterPrefab");
+			names[oldOutfit] = defaults[0].m_sName;
+			changed = true;
+		}
+
+		//--- Missing default loadouts, in their order, before the other loadouts
+		array<ref Resource> addedResources = {};		//!< keeps the new containers alive until the list is saved
+		int insertAt;
+		foreach (CK_ConfigurationScenarioLoadout defaultLoadout : defaults)
+		{
+			int index = names.Find(defaultLoadout.m_sName);
+			if (index >= 0)
+			{
+				insertAt = index + 1;
+				continue;
+			}
+
+			Resource loadoutResource = BaseContainerTools.CreateContainer("CK_MissionLoadout");
+			if (!loadoutResource || !loadoutResource.IsValid())
+				return false;
+
+			addedResources.Insert(loadoutResource);
+			BaseContainer loadout = loadoutResource.GetResource().ToBaseContainer();
+			SetDefaultLoadout(loadout, defaultLoadout, factionKeys);
+			loadoutList.Insert(loadout, insertAt);
+			names.InsertAt(defaultLoadout.m_sName, insertAt);
+			insertAt++;
+			changed = true;
+		}
+
+		if (!changed)
+			return true;
+
 		return BaseContainerTools.SaveContainer(list, loadouts);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	static void SetDefaultLoadout(notnull BaseContainer loadout, notnull CK_ConfigurationScenarioLoadout defaultLoadout, array<string> factionKeys)
+	{
+		loadout.Set("m_sName", defaultLoadout.m_sName);
+		loadout.Set("m_sDescription", defaultLoadout.m_sDescription);
+		loadout.Set("m_sLoadoutCode", defaultLoadout.m_sCode);
+		loadout.Set("m_aFactionKeys", factionKeys);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! "Tenue de briefing" made by the previous versions of the plugin (name and prefab)
+	static bool IsOldOutfitLoadout(BaseContainer loadout)
+	{
+		if (!loadout)
+			return false;
+
+		string name;
+		ResourceName prefab;
+		loadout.Get("m_sName", name);
+		loadout.Get("m_sCharacterPrefab", prefab);
+		return name == OLD_OUTFIT_NAME && prefab.EndsWith(OLD_OUTFIT_PREFAB_SUFFIX);
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -2212,13 +2223,13 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			result += " - briefing du menu CK : " + briefing.GetPath() + "\n";
 
 		if (!loadouts.IsEmpty())
-			result += string.Format(" - loadouts du menu CK : %1 (dont « %2 » : %3)\n", loadouts.GetPath(), BRIEFING_OUTFIT_NAME, GetBriefingOutfitPath(modName));
+			result += string.Format(" - loadouts du menu CK : %1 (« %2 » et « %3 » en premier)\n", loadouts.GetPath(), DEFAULT_LOADOUT_PLACE_DARMES, DEFAULT_LOADOUT_RECRUE);
 
 		result += " - troops : entité CK_Troops du monde (CK Core n'a pas de .conf pour les troops)\n";
 		result += " - intro (titre, lieu, image) : entité CK_MissionIntro du monde\n";
 		result += string.Format(" - point de spawn : entité SpawnPoint_BaseAvancee (faction %1)\n", FACTION_KEY);
 		if (FindGameMode() && notPlayable.IsEmpty())
-			result += string.Format(" - factions jouables : %1 (spawn et tenue de briefing pour %2 uniquement)\n", factionsText, FACTION_KEY);
+			result += string.Format(" - factions jouables : %1 (spawn et loadouts par défaut pour %2 uniquement)\n", factionsText, FACTION_KEY);
 
 		if (!saved)
 			result += "\nLe monde n'a pas pu être enregistré : enregistrez-le (Ctrl+S).\n";
@@ -3312,4 +3323,22 @@ class CK_ConfigurationScenario_DoneDialog
 		return true;
 	}
 }
+
+//------------------------------------------------------------------------------------------------
+//! Default loadout of the CK menu written by the plugin
+class CK_ConfigurationScenarioLoadout
+{
+	string m_sName;
+	string m_sDescription;
+	string m_sCode;
+
+	//------------------------------------------------------------------------------------------------
+	void CK_ConfigurationScenarioLoadout(string name, string description, string code)
+	{
+		m_sName = name;
+		m_sDescription = description;
+		m_sCode = code;
+	}
+}
+
 #endif // WORKBENCH

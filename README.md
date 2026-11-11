@@ -8,7 +8,7 @@ Plugin Workbench (Arma Reforger Tools) pour préparer un scénario CK. Avec lui,
 4. créez le monde du scénario dans le mod : `Worlds/CK_Op_2026_12_02/CK_Op_2026_12_02.ent` (sous-scène du terrain) ;
 5. créez les calques de l'opération : `Composants_Mission`, `Base_Avancee`, `Jour_1` à `Jour_4` ;
 6. lancez Game Mode Setup, toujours en Game Master, avec un mission header au nom de l'opération, signé par vos scénaristes, avec la description et les images CK ;
-7. placez les modules CK (troops, infos de mission, intro au nom et au lieu de l'opération), les arsenaux et le point de spawn « Base avancée », avec un briefing et des loadouts CK propres au scénario, dont la « Tenue de briefing ». Le monde est enregistré à la fin.
+7. placez les modules CK (troops, infos de mission, intro au nom et au lieu de l'opération), les arsenaux et le point de spawn « Base avancée », avec un briefing et des loadouts CK propres au scénario, dont la « Tenue place d'armes » et le « Paquetage recrue ». Le monde est enregistré à la fin.
 
 ## Prérequis
 
@@ -60,8 +60,7 @@ Le monde n'a pas de calque `default`. Si un monde en a déjà un (créé avec un
 | `Worlds/<mod>/<mod>.ent` | le monde du scénario |
 | `Missions/<mod>.conf` | mission header : nom (= opération), auteurs (= scénaristes), description, images, nombre de joueurs |
 | `Configs/CK/<mod>_Briefing.conf` | briefing du menu CK : titre (= opération), sous-titre avec la date, Situation / Mission / Exécution / Logistique / Transmissions à compléter |
-| `Configs/CK/<mod>_Loadouts.conf` | loadouts partagés du menu CK : « Tenue de briefing » en premier, ajoutez les autres à la suite |
-| `Prefabs/CK/<mod>_TenueBriefing.et` | le soldat dont l'équipement est la tenue de briefing |
+| `Configs/CK/<mod>_Loadouts.conf` | loadouts partagés du menu CK : « Tenue place d'armes » et « Paquetage recrue » en premier, ajoutez les autres à la suite |
 | entité `CK_Troops` du monde | troops et bordées (CK Core n'a pas de `.conf` pour les troops : tout se règle sur l'entité) |
 | entité `CK_MissionIntro` du monde | intro au premier spawn : titre (= opération), lieu (= lieu saisi), image, date et heure |
 
@@ -80,17 +79,20 @@ Le briefing et les loadouts sont reliés à `CK_MissionSettings` (composants Bri
 
 Quand vous relancez le plugin, le nom et les auteurs sont repris de la saisie ; la description et les images ne sont remplacées que si elles sont vides ou encore aux valeurs par défaut de Workbench. Vos propres images et votre description sont donc gardées.
 
-## Tenue de briefing
+## Loadouts par défaut
 
-Premier loadout de la mission (faction US), à charger depuis le menu CK, l'arsenal ou le menu de respawn :
+Les deux premiers loadouts de la mission (faction US), à charger depuis le menu CK, l'arsenal ou le menu de respawn :
 
-- treillis BME (veste `F3_BME` et pantalon `Pants_VKPO_BME`, mod French Uniform) ;
-- rangers de l'armée US (vanilla), pas de casque, pas de gilet ni de sac ;
-- Glock 17 de CK Weapons : un chargeur dans l'arme, 2 dans le pantalon ;
-- SICS de CK Equipment (à la place de la carte), dans le pantalon ;
-- montre vanilla, pas de boussole.
+| Loadout | Contenu |
+|---|---|
+| Tenue place d'armes | treillis G3 BME, Glock 17 (3 chargeurs), radio, SICS, boussole, montre, télémètre Vector, galon MTL |
+| Paquetage recrue | treillis G3 BME, FAMAS (viseur, silencieux, 8 chargeurs), Glock 17 (3 chargeurs), casque Ops-Core et casque audio, gilet AVS à plaques, grenade fumigène, radio, SICS, boussole, pelle, couteau, montre, galon MTL |
 
-French Uniform, CK Weapons et CK Equipment ne sont pas ajoutés aux dépendances : chargez-les avec le scénario, sinon les objets de ces mods manquent dans la tenue. Pour changer la tenue, modifiez `Prefabs/CK/<mod>_TenueBriefing.et` (composants Loadout Manager, Inventory Storage Manager et emplacement d'arme 2).
+Ce sont des codes de loadout (menu CK > Arsenal > Exporter) dans `Configs/CK/<mod>_Loadouts.conf`, champ Loadout Code. Pour en changer, collez un autre code à la place.
+
+Les objets viennent de CK Equipment, CK Weapons, GRS et RHS Status Quo. Ces mods ne sont pas ajoutés aux dépendances : chargez-les avec le scénario, sinon leurs objets manquent dans le loadout.
+
+Les scénarios configurés avec une version précédente avaient une « Tenue de briefing » : relancer le plugin la remplace par la « Tenue place d'armes », à la même place dans la liste. Le fichier `Prefabs/CK/<mod>_TenueBriefing.et` reste dans le mod, supprimez-le si vous ne vous en servez plus.
 
 ## Éléments placés
 
@@ -105,7 +107,7 @@ French Uniform, CK Weapons et CK Equipment ne sont pas ajoutés aux dépendances
 | Arsenaux armes, munitions, médical, équipement | `Base_Avancee` | Arma Reforger | `Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_*_US.et` |
 | Point de spawn « Base avancée » | `Base_Avancee` | Arma Reforger | `Prefabs/MP/Spawning/SpawnPoint_US.et` |
 
-Factions : en Game Master, aucune faction n'est jouable au départ. Le plugin rend US et USSR jouables dans le gestionnaire de factions du mode de jeu, comme `FactionManager_USxUSSR` (ce prefab n'est pas ajouté : il entrerait en conflit avec le gestionnaire du Game Master). Le spawn « Base avancée » et la tenue de briefing sont pour US : pour jouer USSR, ajoutez-lui un point de spawn et des tenues.
+Factions : en Game Master, aucune faction n'est jouable au départ. Le plugin rend US et USSR jouables dans le gestionnaire de factions du mode de jeu, comme `FactionManager_USxUSSR` (ce prefab n'est pas ajouté : il entrerait en conflit avec le gestionnaire du Game Master). Le spawn « Base avancée » et les loadouts par défaut sont pour US : pour jouer USSR, ajoutez-lui un point de spawn et des loadouts.
 
 ## Si le redémarrage se passe mal
 
@@ -124,5 +126,5 @@ Le redémarrage écrit son déroulé dans `Documents\My Games\ArmaReforgerWorkbe
 - Le menu Plugins contient aussi **CK - Game Mode Setup (Game Master)** : c'est l'assistant vanilla sans le choix du modèle, utilisé par le plugin. Il peut servir seul.
 - Avant de modifier `addon.gproj`, le plugin en garde une copie dans `Documents\My Games\ArmaReforgerWorkbench\profile\CK_ConfigurationScenario\` (avec l'état de la configuration en cours).
 - Le dossier du plugin peut rester dans le projet publié : le jeu ne charge pas les scripts `WorkbenchGame`.
-- Mise à jour : remplacez le fichier `.c` et copiez le dossier `UI`. Sur un scénario déjà configuré, relancez le plugin pour ajouter ce qui manque (intro, tenue de briefing, images du mission header).
+- Mise à jour : remplacez le fichier `.c` et copiez le dossier `UI`. Sur un scénario déjà configuré, relancez le plugin pour ajouter ce qui manque (intro, loadouts par défaut, images du mission header).
 - Testé avec Arma Reforger Tools 1.9.
