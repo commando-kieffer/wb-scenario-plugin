@@ -7,7 +7,7 @@
 //! 4. Sous-scène Worlds/<mod>/<mod>.ent créée dans le mod et ouverte.
 //! 5. Briefing, loadouts CK (tenue place d'armes et paquetage recrue), Game Mode Setup en Game Master (mission header : nom de l'opération,
 //!    scénaristes, description et images CK).
-//! 6. Calques Composants_Mission (systèmes), Base_Avancee (FOB) et Jour_1 à Jour_4, éléments CK, arsenaux et point de spawn
+//! 6. Calques Composants_Mission (systèmes), Base_Avancee (FOB) et Jour_1 à Jour_4, éléments CK, palette arsenal et point de spawn
 //!    US "Base avancée" placés, intro au nom et au lieu de l'opération, factions US et USSR jouables, monde enregistré.
 //! Aucune classe CK n'est référencée par ce script : il compile sans les mods CK (avant l'ajout des dépendances).
 [WorkbenchPluginAttribute(name: "CK - Configuration Scénario", description: "Dépendances CK, monde, mode de jeu Game Master et éléments CK du scénario", wbModules: { "ResourceManager", "WorldEditor" }, awesomeFontCode: 0xF024)]
@@ -1683,8 +1683,8 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		code += "22slots%5C%22:{}}]},%5C%2214%5C%22:{%5C%22prefab%5C%22:%5C%22140F46DF06586070%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:6A3A0176D88DF248%5C%22,%5C%22slots%5C%22:{%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%229DB69176CEF0EE97%5C%22}}}]},%5C%2219%5C%22:{%5C%22prefab%5C%22:%5C%229FF96CE108DDA22B%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:697CF639B780F502%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22}}}]},%5C%2220%5C%22:{%5C%22prefab%5C%22:%5C%229FF96CE108DDA22B%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:697CF639B780F502%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%225523186F55EF616A%5C%22}}}]},%5C%2242";
 		code += "%5C%22:{%5C%22prefab%5C%22:%5C%22968A2E9871419162%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:697F3B6A10BD9A49%5C%22,%5C%22slots%5C%22:{}}]}}}]},%5C%223%5C%22:{%5C%22prefab%5C%22:%5C%224221022703A2852D%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:5222CB01D5B9A306%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22D69684663E89D6EA%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%2261D4F80E49BF9B12%5C%22},%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%2285427A0E24357BE6%5C%22},%5C%223%5C%22:{%5C%22prefab%5C%22:%5C%226E35D94130954509%5C%22}}}]},%5C%224%5C%22:{%5C%22prefab%5C%22:%5C%2298388F9E1E801A42%5C%22},%5C%229%5C%22:{%5C%22prefab%5C%22:%5C%227EDD40FF83EDA44F%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22ClothNodeStorageComponent:65CD429CD4A3549B%5C%22,%5C%22slots%5C%22:{%5C%224%5C%22:{%5C%22pr";
 		code += "efab%5C%22:%5C%2228480419FE4C4063%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:65CD429B184CE5AA%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22C81DBB62917BCE20%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_WeaponAttachmentsStorageComponent:51F080D5CE45A1A2%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%223C9D22848B84856E%5C%22}}}]}}}]},%5C%225%5C%22:{%5C%22prefab%5C%22:%5C%227591612DB8B27A5D%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:65E71517FCDC40DB%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%223C9D22848B84856E%5C%22}}}]},%5C%226%5C%22:{%5C%22prefab%5C%22:%5C%227591612DB8B27A5D%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_EquipmentStorageComponent:65E71517FCDC40DB%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%223C9D22848B84856E%5C";
-		code += "%22}}}]},%5C%2211%5C%22:{%5C%22prefab%5C%22:%5C%22F0DBA15DD3CEE5A6%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_PouchStorageComponent:697CF62538A99DF1%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22},%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%22D70216B1B2889129%5C%22}}}]},%5C%2212%5C%22:{%5C%22prefab%5C%22:%5C%22240ADA340097707B%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_EquipmentStorageComponent:697414F4E6769F13%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22C9A4E563205BAC75%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:65CC0BEE0F3F0545%5C%22,%5C%22slots%5C%22:{}}]}}},{%5C%22id%5C%22:%5C%22GRS_PouchStorageComponent:6970D6BE302BB3D9%5C%22,%5C%22slots%5C%22:{}}]}}}]},%5C%2213%5C%22:{%5C%22prefab%5C%22:%5C%22D38F";
-		code += "6F82BF7F83B8%5C%22}}}],%5C%22loadoutLabels%5C%22:[122,46,70,2,11],%5C%22activeWeaponIdx%5C%22:0}}%22}";
+		code += "%22}}}]},%5C%2211%5C%22:{%5C%22prefab%5C%22:%5C%22F0DBA15DD3CEE5A6%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22GRS_PouchStorageComponent:697CF62538A99DF1%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22},%5C%221%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22},%5C%222%5C%22:{%5C%22prefab%5C%22:%5C%22D70216B1B2889129%5C%22},%5C%223%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22},%5C%224%5C%22:{%5C%22prefab%5C%22:%5C%22A81F501D3EF6F38E%5C%22}}}]},%5C%2212%5C%22:{%5C%22prefab%5C%22:%5C%22240ADA340097707B%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_EquipmentStorageComponent:697414F4E6769F13%5C%22,%5C%22slots%5C%22:{%5C%220%5C%22:{%5C%22prefab%5C%22:%5C%22C9A4E563205BAC75%5C%22,%5C%22storages%5C%22:[{%5C%22id%5C%22:%5C%22SCR_UniversalInventoryStorageComponent:65CC0BEE0F3F0545%5C%22,%5C%22slots%5C%22:{}}]}}},{%5C%22id%5C%22:";
+		code += "%5C%22GRS_PouchStorageComponent:6970D6BE302BB3D9%5C%22,%5C%22slots%5C%22:{}}]}}}]},%5C%2213%5C%22:{%5C%22prefab%5C%22:%5C%22D38F6F82BF7F83B8%5C%22}}}],%5C%22loadoutLabels%5C%22:[122,46,70,2,11],%5C%22activeWeaponIdx%5C%22:0}}%22}";
 		return code;
 	}
 
@@ -1755,6 +1755,9 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			int index = names.Find(defaultLoadout.m_sName);
 			if (index >= 0)
 			{
+				if (UpdateDefaultLoadoutCode(loadoutList.Get(index), defaultLoadout))
+					changed = true;
+
 				insertAt = index + 1;
 				continue;
 			}
@@ -1776,6 +1779,25 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 			return true;
 
 		return BaseContainerTools.SaveContainer(list, loadouts);
+	}
+
+	//------------------------------------------------------------------------------------------------
+	//! Code of a default loadout written by an older version of the plugin (same name, date and scenario at the start of the
+	//! code, other equipment) replaced by the current one. A code exported again by the scenario maker is kept (other date).
+	//! \return true when the code was replaced
+	static bool UpdateDefaultLoadoutCode(notnull BaseContainer loadout, notnull CK_ConfigurationScenarioLoadout defaultLoadout)
+	{
+		string code;
+		loadout.Get("m_sLoadoutCode", code);
+		if (code == defaultLoadout.m_sCode)
+			return false;
+
+		int headerLength = defaultLoadout.m_sCode.IndexOf("%22faction%22");
+		if (headerLength <= 0 || !code.StartsWith(defaultLoadout.m_sCode.Substring(0, headerLength)))
+			return false;
+
+		loadout.Set("m_sLoadoutCode", defaultLoadout.m_sCode);
+		return true;
 	}
 
 	//------------------------------------------------------------------------------------------------
@@ -2156,12 +2178,9 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		items.Insert(new CK_ConfigurationScenarioItem("Estrade avec insigne CK", "{037D8AF0FEA3F550}Prefabs/Props/Military/Camps/Platform_01_CK.et", string.Empty, 0, 12, LAYER_BASE));
 		items.Insert(new CK_ConfigurationScenarioItem("Dépôt de véhicules - héliport", "{1B9E7DBB225CB67A}Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Helipad.et", string.Empty, 20, 8, LAYER_BASE));
 		items.Insert(new CK_ConfigurationScenarioItem("Dépôt de véhicules - plateforme", "{B52781AA71008D77}Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Platform.et", string.Empty, -15, 8, LAYER_BASE));
+		items.Insert(new CK_ConfigurationScenarioItem("Palette arsenal CK (Bacon Loadout Editor)", "{9552761567926EB5}Prefabs/Props/Military/Arsenal/CK_Arsenal_01_Bacon.et", string.Empty, 0, 5, LAYER_BASE));
 
 		//--- Arma Reforger
-		items.Insert(new CK_ConfigurationScenarioItem("Arsenal armes", "{377EB906F591E4BA}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Weapons_US.et", string.Empty, -3, 5, LAYER_BASE));
-		items.Insert(new CK_ConfigurationScenarioItem("Arsenal munitions", "{5FFD91CF507BFFFB}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Ammunition_US.et", string.Empty, -1, 5, LAYER_BASE));
-		items.Insert(new CK_ConfigurationScenarioItem("Arsenal médical", "{891EF8A5FB7162F1}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Medical_US.et", string.Empty, 1, 5, LAYER_BASE));
-		items.Insert(new CK_ConfigurationScenarioItem("Arsenal équipement", "{0FC1D6E9B592F75D}Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_Equipment_US.et", string.Empty, 3, 5, LAYER_BASE));
 		items.Insert(new CK_ConfigurationScenarioItem("Point de spawn US « " + SPAWN_POINT_NAME + " »", "{5A2220DD0C16958B}Prefabs/MP/Spawning/SpawnPoint_US.et", "SpawnPoint_BaseAvancee", 0, -4, LAYER_BASE, CK_EConfigurationScenarioItem.SPAWN_POINT));
 	}
 
@@ -2215,7 +2234,7 @@ class CK_ConfigurationScenarioPlugin : WorkbenchPlugin
 		if (!listFailed.IsEmpty())
 			result += "Échec de création :\n" + listFailed + "\n";
 
-		result += string.Format("Calques : %1 (systèmes), %2 (FOB : arsenaux, dépôts, spawn), %3 à %4 (un par vendredi). Calque actif : %3.\n\n", LAYER_SYSTEMS, LAYER_BASE, LAYER_DAY + "1", LAYER_DAY + DAY_COUNT.ToString());
+		result += string.Format("Calques : %1 (systèmes), %2 (FOB : arsenal, dépôts, spawn), %3 à %4 (un par vendredi). Calque actif : %3.\n\n", LAYER_SYSTEMS, LAYER_BASE, LAYER_DAY + "1", LAYER_DAY + DAY_COUNT.ToString());
 		result += "À modifier dans le mod :\n";
 		result += string.Format(" - monde : Worlds/%1/%1.ent\n", modName);
 		result += string.Format(" - mission header (nom, auteurs, description, images, joueurs) : Missions/%1.conf\n", modName);

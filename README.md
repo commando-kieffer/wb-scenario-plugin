@@ -8,7 +8,7 @@ Plugin Workbench (Arma Reforger Tools) pour préparer un scénario CK. Avec lui,
 4. créez le monde du scénario dans le mod : `Worlds/CK_Op_2026_12_02/CK_Op_2026_12_02.ent` (sous-scène du terrain) ;
 5. créez les calques de l'opération : `Composants_Mission`, `Base_Avancee`, `Jour_1` à `Jour_4` ;
 6. lancez Game Mode Setup, toujours en Game Master, avec un mission header au nom de l'opération, signé par vos scénaristes, avec la description et les images CK ;
-7. placez les modules CK (troops, infos de mission, intro au nom et au lieu de l'opération), les arsenaux et le point de spawn « Base avancée », avec un briefing et des loadouts CK propres au scénario, dont la « Tenue place d'armes » et le « Paquetage recrue ». Le monde est enregistré à la fin.
+7. placez les modules CK (troops, infos de mission, intro au nom et au lieu de l'opération), la palette arsenal CK et le point de spawn « Base avancée », avec un briefing et des loadouts CK propres au scénario, dont la « Tenue place d'armes » et le « Paquetage recrue ». Le monde est enregistré à la fin.
 
 ## Prérequis
 
@@ -48,7 +48,7 @@ Ce qui est déjà dans le monde n'est pas placé une deuxième fois : vous pouve
 | Calque | Contenu |
 |---|---|
 | `Composants_Mission` | composants système : mode de jeu Game Master et ses gestionnaires, AI World, Perception Manager, `CK_Troops`, `CK_MissionSettings`, `CK_MissionIntro` |
-| `Base_Avancee` | la base avancée (FOB), d'où l'on part : arsenaux, dépôts de véhicules, point de spawn « Base avancée », estrade CK |
+| `Base_Avancee` | la base avancée (FOB), d'où l'on part : palette arsenal, dépôts de véhicules, point de spawn « Base avancée », estrade CK |
 | `Jour_1` à `Jour_4` | vides : un calque par jour de l'opération (un vendredi = un jour) |
 
 Le monde n'a pas de calque `default`. Si un monde en a déjà un (créé avec une ancienne version du plugin), le plugin range les entités du scénario dans leurs calques et supprime `default` quand il est vide. Les entités que vous avez mises dans un autre calque ne bougent pas.
@@ -85,10 +85,10 @@ Les deux premiers loadouts de la mission (faction US), à charger depuis le menu
 
 | Loadout | Contenu |
 |---|---|
-| Tenue place d'armes | treillis G3 BME, Glock 17 (3 chargeurs), radio, SICS, boussole, montre, télémètre Vector, galon MTL |
-| Paquetage recrue | treillis G3 BME, FAMAS (viseur, silencieux, 8 chargeurs), Glock 17 (3 chargeurs), casque Ops-Core et casque audio, gilet AVS à plaques, grenade fumigène, radio, SICS, boussole, pelle, couteau, montre, galon MTL |
+| Tenue place d'armes | treillis G3 BME, Glock 17 (3 chargeurs), 2 pansements, garrot, radio, SICS, boussole, montre, télémètre Vector, galon MTL |
+| Paquetage recrue | treillis G3 BME, FAMAS (viseur, silencieux, 8 chargeurs), Glock 17 (3 chargeurs), casque Ops-Core et casque audio, gilet AVS à plaques, grenade fumigène, 4 pansements, garrot, radio, SICS, boussole, pelle, couteau, montre, galon MTL |
 
-Ce sont des codes de loadout (menu CK > Arsenal > Exporter) dans `Configs/CK/<mod>_Loadouts.conf`, champ Loadout Code. Pour en changer, collez un autre code à la place.
+Ce sont des codes de loadout (menu CK > Arsenal > Exporter) dans `Configs/CK/<mod>_Loadouts.conf`, champ Loadout Code. Pour en changer, collez un autre code à la place. Quand le plugin met à jour un loadout par défaut, le relancer remplace l'ancien code ; un code que vous avez collé vous-même est gardé.
 
 Les objets viennent de CK Equipment, CK Weapons, GRS et RHS Status Quo. Ces mods ne sont pas ajoutés aux dépendances : chargez-les avec le scénario, sinon leurs objets manquent dans le loadout.
 
@@ -104,7 +104,7 @@ Les scénarios configurés avec une version précédente avaient une « Tenue de
 | Estrade avec insigne CK | `Base_Avancee` | CK Props | `Prefabs/Props/Military/Camps/Platform_01_CK.et` |
 | Dépôt de véhicules - héliport | `Base_Avancee` | CK Structures | `Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Helipad.et` |
 | Dépôt de véhicules - plateforme | `Base_Avancee` | CK Structures | `Prefabs/Structures/Military/Garages/CK_Vehicle_Depot/CK_Vehicle_Depot_Platform.et` |
-| Arsenaux armes, munitions, médical, équipement | `Base_Avancee` | Arma Reforger | `Prefabs/Props/Military/Arsenal/AmmoBoxes/US/AmmoBoxArsenal_*_US.et` |
+| Palette arsenal CK : armes et munitions, équipement, matériel médical (Bacon Loadout Editor quand ce mod est chargé, arsenaux classiques sinon) | `Base_Avancee` | CK Props | `Prefabs/Props/Military/Arsenal/CK_Arsenal_01_Bacon.et` |
 | Point de spawn « Base avancée » | `Base_Avancee` | Arma Reforger | `Prefabs/MP/Spawning/SpawnPoint_US.et` |
 
 Factions : en Game Master, aucune faction n'est jouable au départ. Le plugin rend US et USSR jouables dans le gestionnaire de factions du mode de jeu, comme `FactionManager_USxUSSR` (ce prefab n'est pas ajouté : il entrerait en conflit avec le gestionnaire du Game Master). Le spawn « Base avancée » et les loadouts par défaut sont pour US : pour jouer USSR, ajoutez-lui un point de spawn et des loadouts.
@@ -126,5 +126,5 @@ Le redémarrage écrit son déroulé dans `Documents\My Games\ArmaReforgerWorkbe
 - Le menu Plugins contient aussi **CK - Game Mode Setup (Game Master)** : c'est l'assistant vanilla sans le choix du modèle, utilisé par le plugin. Il peut servir seul.
 - Avant de modifier `addon.gproj`, le plugin en garde une copie dans `Documents\My Games\ArmaReforgerWorkbench\profile\CK_ConfigurationScenario\` (avec l'état de la configuration en cours).
 - Le dossier du plugin peut rester dans le projet publié : le jeu ne charge pas les scripts `WorkbenchGame`.
-- Mise à jour : remplacez le fichier `.c` et copiez le dossier `UI`. Sur un scénario déjà configuré, relancez le plugin pour ajouter ce qui manque (intro, loadouts par défaut, images du mission header).
+- Mise à jour : remplacez le fichier `.c` et copiez le dossier `UI`. Sur un scénario déjà configuré, relancez le plugin pour ajouter ce qui manque (intro, loadouts par défaut, palette arsenal, images du mission header). Les 4 caisses d'arsenal des versions précédentes restent dans le monde : supprimez-les si la palette suffit.
 - Testé avec Arma Reforger Tools 1.9.
